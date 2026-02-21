@@ -9,7 +9,9 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "check": "node --check src/index.js"
+    "check": "node --check src/index.js && node --check scripts/manual_signaling_utils.js && node --check scripts/manual_offer_client.js && node --check scripts/manual_answer_server.js",
+    "manual:offer": "node scripts/manual_offer_client.js",
+    "manual:answer": "node scripts/manual_answer_server.js"
   },
   "keywords": [
     "mcp",

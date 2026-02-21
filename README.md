@@ -66,24 +66,36 @@ HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable
 4. Server validates key (single-use + 10-minute TTL), returns `answerSdp`.
 5. Client applies answer, data channel opens, terminal starts.
 
-## Two-machine peer test (no broker)
+## Manual copy/paste cross-machine flow (recommended minimal path)
 
-You can test direct peer WebRTC between two machines with only signaling HTTP exposed.
+This is the default low-friction path when you have shell access to both machines and do not want to host signaling publicly.
 
-1. On machine B (receiver), run with a public URL:
+1. Start server on machine B:
 ```bash
-WEBRTC_MCP_ADMIN_TOKEN='token-b' \
-WEBRTC_MCP_PUBLIC_BASE_URL='https://mcp-b.synergiqai.com' \
 npm start
 ```
-2. Ensure `https://mcp-b.synergiqai.com/api/connect` routes to B's local server (Cloudflare Tunnel is fine for signaling).
-3. Fetch B pass key (`get_latest_pass_key` tool or `GET /api/passkeys/latest` with admin token).
-4. On machine A (offerer), connect to B using B's `connectEndpoint` + pass key.
+2. Get a one-time pass key on machine B:
+- MCP tool: `get_latest_pass_key`
+- Or HTTP: `GET http://127.0.0.1:8787/api/passkeys/latest`
+3. On machine A, generate offer and wait for answer:
+```bash
+npm run manual:offer -- --pass-key 'PASTE-PASSKEY-HERE'
+```
+4. Copy printed `OFFER_BLOB` from machine A.
+5. On machine B, turn offer into answer:
+```bash
+npm run manual:answer -- --blob 'PASTE_OFFER_BLOB_HERE'
+```
+6. Copy printed `ANSWER_BLOB` from machine B back into machine A prompt.
+7. Session opens on machine A; run commands interactively.
 
 Notes:
-- No middle data broker is required in this flow.
-- Network reachability is still required for signaling.
+- This path uses no middle data broker.
+- The helper client keeps the channel alive with ping/pong and periodic keepalive pings.
 - WebRTC data channels are encrypted in transit by DTLS.
+- If B is not on `127.0.0.1:8787`, set `WEBRTC_MCP_CONNECT_URL` or pass `--connect-url` on machine B.
+
+Optional: if you later expose signaling on a public URL, set `WEBRTC_MCP_PUBLIC_BASE_URL` so pass-key payloads advertise a remote `connectEndpoint`.
 
 ## ICE examples
 
