@@ -903,9 +903,12 @@ function buildMcpServer() {
       return asToolText({
         passKey: active.passKey,
         connectEndpoint: active.connectEndpoint,
-        machineAStep: `npm run manual:offer -- --pass-key '${active.passKey}' --connect-url '${active.connectEndpoint}'`,
+        roleA: "Machine A (offerer)",
+        roleB: "Machine B (answerer)",
+        machineAStep: `npm run connect:a -- --pass-key '${active.passKey}' --connect-url '${active.connectEndpoint}'`,
         machineBStep:
           "After receiving OFFER_BLOB line from machine A, call tool answer_offer_blob with offerBlob and paste returned answerBlobLine back on machine A.",
+        machineBFallbackStep: "npm run connect:b -- --blob 'OFFER_BLOB=...'",
         notes: [
           "Use this when both machines are accessible but no public signaling service is hosted.",
           "Data channel traffic is encrypted by DTLS.",
