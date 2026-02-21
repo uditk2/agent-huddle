@@ -2,34 +2,30 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="$REPO_DIR/.mcp.json"
+SCOPE="${1:-project}"
+SERVER_NAME="webrtc-terminal"
+SERVER_CMD="node"
+SERVER_ARG="$REPO_DIR/src/index.js"
 
-export REPO_DIR
+if ! command -v claude >/dev/null 2>&1; then
+  echo "Error: 'claude' CLI is not installed or not in PATH."
+  exit 1
+fi
 
-node <<'NODE'
-const fs = require('fs');
-const path = require('path');
+if [[ "$SCOPE" != "project" && "$SCOPE" != "user" && "$SCOPE" != "local" ]]; then
+  echo "Usage: $0 [project|user|local]"
+  exit 1
+fi
 
-const repoDir = process.env.REPO_DIR;
-const target = path.join(repoDir, '.mcp.json');
+# Remove existing entry in the selected scope to keep install idempotent.
+claude mcp remove "$SERVER_NAME" -s "$SCOPE" >/dev/null 2>&1 || true
 
-let doc = { mcpServers: {} };
-if (fs.existsSync(target)) {
-  const raw = fs.readFileSync(target, 'utf8');
-  doc = raw.trim() ? JSON.parse(raw) : { mcpServers: {} };
-}
+claude mcp add -s "$SCOPE" "$SERVER_NAME" -- "$SERVER_CMD" "$SERVER_ARG"
 
-if (!doc.mcpServers || typeof doc.mcpServers !== 'object') {
-  doc.mcpServers = {};
-}
+echo "Claude Code MCP server installed:"
+claude mcp get "$SERVER_NAME"
 
-doc.mcpServers['webrtc-terminal'] = {
-  command: 'node',
-  args: [path.join(repoDir, 'src/index.js')],
-};
-
-fs.writeFileSync(target, `${JSON.stringify(doc, null, 2)}\n`);
-console.log(`Updated ${target}`);
-NODE
-
-echo "Claude Code MCP entry installed in $TARGET"
+if [[ "$SCOPE" == "user" && -f "$REPO_DIR/.mcp.json" ]] && rg -q "\"$SERVER_NAME\"" "$REPO_DIR/.mcp.json"; then
+  echo "Note: project scope also has '$SERVER_NAME'. User scope may be shadowed in this repo."
+  echo "If needed, remove project scope with: claude mcp remove \"$SERVER_NAME\" -s project"
+fi

@@ -85,10 +85,24 @@ codex mcp add webrtc-terminal -- node /absolute/path/to/src/index.js
 Use:
 
 ```bash
-./scripts/install_claude_code.sh
+./scripts/install_claude_code.sh project
 ```
 
-This writes a project-level `.mcp.json` in this repo with a `webrtc-terminal` server entry.
+Scopes:
+
+- `project` (default): available only in this repo
+- `user`: available across all repos for this user
+- `local`: current local workspace scope in Claude
+
+Examples:
+
+```bash
+./scripts/install_claude_code.sh project
+./scripts/install_claude_code.sh user
+```
+
+The installer now uses `claude mcp add` directly, so Claude registers the server in the selected scope.
+If both `project` and `user` scopes exist with the same name, project scope takes precedence in this repo.
 
 ## Quick test
 
@@ -97,4 +111,3 @@ This writes a project-level `.mcp.json` in this repo with a `webrtc-terminal` se
 3. Issue key with admin token `localtest`
 4. Connect using generated pass key
 5. Run terminal commands through the client
-
