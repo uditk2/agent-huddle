@@ -432,20 +432,20 @@ function attachDataChannel(session, channel) {
 }
 
 async function waitForIceGatheringComplete(peerConnection, timeoutMs = 5000) {
-  if (peerConnection.iceGatheringState === "complete") return;
+  if (peerConnection.iceGatheringState === "complete") return true;
 
-  await new Promise((resolve, reject) => {
+  return await new Promise((resolve) => {
     const onChange = () => {
       if (peerConnection.iceGatheringState === "complete") {
         clearTimeout(timeoutId);
         peerConnection.removeEventListener("icegatheringstatechange", onChange);
-        resolve();
+        resolve(true);
       }
     };
 
     const timeoutId = setTimeout(() => {
       peerConnection.removeEventListener("icegatheringstatechange", onChange);
-      reject(new Error("Timed out while gathering ICE candidates"));
+      resolve(false);
     }, timeoutMs);
 
     peerConnection.addEventListener("icegatheringstatechange", onChange);
@@ -554,7 +554,10 @@ async function connectOffer({ passKey, offerSdp, label }) {
 
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
-    await waitForIceGatheringComplete(peerConnection);
+    const gatheredComplete = await waitForIceGatheringComplete(peerConnection);
+    if (!gatheredComplete) {
+      log(`ICE gathering timed out for session ${session.sessionId}; returning partial answer SDP`);
+    }
 
     return {
       session,

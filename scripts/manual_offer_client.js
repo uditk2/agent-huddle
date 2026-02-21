@@ -19,20 +19,20 @@ function usage(exitCode = 1) {
 
 function waitForIceGatheringComplete(peerConnection, timeoutMs = 10000) {
   if (peerConnection.iceGatheringState === "complete") {
-    return Promise.resolve();
+    return Promise.resolve(true);
   }
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const onChange = () => {
       if (peerConnection.iceGatheringState === "complete") {
         clearTimeout(timeoutId);
         peerConnection.removeEventListener("icegatheringstatechange", onChange);
-        resolve();
+        resolve(true);
       }
     };
     const timeoutId = setTimeout(() => {
       peerConnection.removeEventListener("icegatheringstatechange", onChange);
-      reject(new Error("Timed out while gathering ICE candidates"));
+      resolve(false);
     }, timeoutMs);
     peerConnection.addEventListener("icegatheringstatechange", onChange);
   });
@@ -176,7 +176,10 @@ async function main() {
 
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
-  await waitForIceGatheringComplete(peerConnection);
+  const gatheredComplete = await waitForIceGatheringComplete(peerConnection);
+  if (!gatheredComplete) {
+    process.stderr.write("[warning] ICE gathering timed out; continuing with partial offer SDP\n");
+  }
 
   const offerSdp = peerConnection.localDescription?.sdp;
   if (!offerSdp) {
