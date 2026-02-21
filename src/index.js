@@ -999,7 +999,7 @@ function buildMcpServer() {
           role: "machine_b",
           passKey: active.passKey,
           connectEndpoint: active.connectEndpoint,
-          machineAStep: `npm run connect:a -- --pass-key '${active.passKey}' --connect-url '${active.connectEndpoint}'`,
+          machineAStep: `npm run connect:a -- --pass-key '${active.passKey}'`,
           machineANextToolCall: {
             tool: "connect",
             args: {
@@ -1034,8 +1034,8 @@ function buildMcpServer() {
 
       return asToolText({
         role: "machine_a",
-        machineAStep: `npm run connect:a -- --pass-key '${passKey}' --connect-url '${connectEndpoint}'`,
-        next: "Run machineAStep in terminal on Machine A. It will print OFFER_BLOB line. Send that line to Machine B and call connect there with role=machine_b and offerBlob.",
+        machineAStep: `npm run connect:a -- --pass-key '${passKey}'`,
+        next: "Run machineAStep in terminal on Machine A. It will print OFFER_BLOB line. Send that line to Machine B and call connect there with role=machine_b and offerBlob. No direct A->B API call is required in this default copy/paste path.",
       });
     },
   );
@@ -1051,7 +1051,7 @@ function buildMcpServer() {
         connectEndpoint: active.connectEndpoint,
         roleA: "Machine A (offerer)",
         roleB: "Machine B (answerer)",
-        machineAStep: `npm run connect:a -- --pass-key '${active.passKey}' --connect-url '${active.connectEndpoint}'`,
+        machineAStep: `npm run connect:a -- --pass-key '${active.passKey}'`,
         machineBStep:
           "After receiving OFFER_BLOB line from machine A, call tool answer_offer_blob with offerBlob and paste returned answerBlobLine back on machine A.",
         machineBFallbackStep: "npm run connect:b -- --blob 'OFFER_BLOB=...'",

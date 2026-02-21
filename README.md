@@ -48,7 +48,7 @@ Notes:
 
 Machine A:
 ```bash
-npm run connect:a -- --pass-key '<PASSKEY>' --connect-url '<CONNECT_ENDPOINT>'
+npm run connect:a -- --pass-key '<PASSKEY>'
 ```
 
 Machine B (fallback if not using MCP `connect`):
