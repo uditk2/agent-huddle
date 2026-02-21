@@ -76,6 +76,24 @@ function parseIceServers(raw) {
   }
 }
 
+function encodeBlob(payload) {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeBlob(blob, label = "blob") {
+  try {
+    let normalized = blob.trim();
+    const prefixed = normalized.match(/^[A-Z_]+=(.+)$/s);
+    if (prefixed && prefixed[1]) {
+      normalized = prefixed[1].trim();
+    }
+    const text = Buffer.from(normalized, "base64url").toString("utf8");
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid ${label}: ${formatError(error)}`);
+  }
+}
+
 function formatError(error) {
   if (!error) return "unknown error";
   if (error instanceof Error) return error.message;
@@ -872,6 +890,85 @@ function buildMcpServer() {
           sessionId: active.sessionId,
           expiresAt: active.expiresAt,
         },
+      });
+    },
+  );
+
+  mcp.tool(
+    "manual_connect_guide",
+    "Return guided next steps for copy/paste cross-machine connect via Codex/Claude.",
+    {},
+    async () => {
+      const active = activePassPayload();
+      return asToolText({
+        passKey: active.passKey,
+        connectEndpoint: active.connectEndpoint,
+        machineAStep: `npm run manual:offer -- --pass-key '${active.passKey}' --connect-url '${active.connectEndpoint}'`,
+        machineBStep:
+          "After receiving OFFER_BLOB line from machine A, call tool answer_offer_blob with offerBlob and paste returned answerBlobLine back on machine A.",
+        notes: [
+          "Use this when both machines are accessible but no public signaling service is hosted.",
+          "Data channel traffic is encrypted by DTLS.",
+        ],
+      });
+    },
+  );
+
+  mcp.tool(
+    "answer_offer_blob",
+    "Consume OFFER_BLOB and return ANSWER_BLOB for manual copy/paste signaling.",
+    {
+      offerBlob: z.string().min(16),
+      label: z.string().trim().max(120).optional(),
+    },
+    async ({ offerBlob, label }) => {
+      let parsed;
+      try {
+        parsed = decodeBlob(offerBlob, "offerBlob");
+      } catch (error) {
+        return asToolText({ error: "invalid-offer-blob", detail: formatError(error) });
+      }
+
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        typeof parsed.passKey !== "string" ||
+        typeof parsed.offerSdp !== "string"
+      ) {
+        return asToolText({
+          error: "invalid-offer-payload",
+          detail: "Expected offer blob payload with passKey and offerSdp",
+        });
+      }
+
+      const result = await connectOffer({
+        passKey: parsed.passKey,
+        offerSdp: parsed.offerSdp,
+        label: label || "manual-blob",
+      });
+
+      if (result.error) {
+        return asToolText({
+          error: result.error,
+          detail: result.detail,
+          status: result.status || 400,
+        });
+      }
+
+      const answerPayload = {
+        version: 1,
+        answerSdp: result.answerSdp,
+        sessionId: result.session.sessionId,
+        expiresAt: nowIso(result.session.expiresAt),
+        createdAt: nowIso(),
+      };
+      const answerBlob = encodeBlob(answerPayload);
+      return asToolText({
+        ok: true,
+        sessionId: result.session.sessionId,
+        expiresAt: nowIso(result.session.expiresAt),
+        answerBlob,
+        answerBlobLine: `ANSWER_BLOB=${answerBlob}`,
       });
     },
   );

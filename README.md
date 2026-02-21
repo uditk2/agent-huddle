@@ -20,13 +20,23 @@ MCP server that issues one-time pass keys and only accepts WebRTC terminal conne
 - For unrestricted root-level access, run the server process as `root`.
 - Set `WEBRTC_MCP_ADMIN_TOKEN` so pass key issuance is authenticated.
 
-## Install
+## Recommended Usage (Codex/Claude)
 
+Install through your MCP client. The installer scripts already prepare isolated runtime and run `npm install` there.
+
+Codex:
 ```bash
-npm install
+./scripts/install_codex.sh
 ```
 
-## Run
+Claude Code:
+```bash
+./scripts/install_claude_code.sh user
+```
+
+After install, use MCP tools directly. You usually do not need `npm start`.
+
+## Standalone Run (optional)
 
 ```bash
 WEBRTC_MCP_ADMIN_TOKEN='change-this' npm start
@@ -66,28 +76,21 @@ HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable
 4. Server validates key (single-use + 10-minute TTL), returns `answerSdp`.
 5. Client applies answer, data channel opens, terminal starts.
 
-## Manual copy/paste cross-machine flow (recommended minimal path)
+## Manual copy/paste cross-machine flow (MCP-guided)
 
-This is the default low-friction path when you have shell access to both machines and do not want to host signaling publicly.
+This is the default low-friction path when both machines have Codex/Claude and you do not want to host signaling publicly.
 
-1. Start server on machine B:
-```bash
-npm start
-```
-2. Get a one-time pass key on machine B:
-- MCP tool: `get_latest_pass_key`
-- Or HTTP: `GET http://127.0.0.1:8787/api/passkeys/latest`
-3. On machine A, generate offer and wait for answer:
-```bash
-npm run manual:offer -- --pass-key 'PASTE-PASSKEY-HERE'
-```
-4. Copy printed `OFFER_BLOB` from machine A.
-5. On machine B, turn offer into answer:
+1. On machine B, call MCP tool `manual_connect_guide`.
+2. Copy `machineAStep` and run it on machine A.
+3. Machine A prints one line: `OFFER_BLOB=...`.
+4. On machine B, call MCP tool `answer_offer_blob` with that full line as `offerBlob`.
+5. Copy returned `answerBlobLine` (`ANSWER_BLOB=...`) from machine B back to machine A prompt.
+6. Session opens on machine A; run commands interactively.
+
+Fallback without MCP tool invocation on machine B:
 ```bash
 npm run manual:answer -- --blob 'PASTE_OFFER_BLOB_HERE'
 ```
-6. Copy printed `ANSWER_BLOB` from machine B back into machine A prompt.
-7. Session opens on machine A; run commands interactively.
 
 Notes:
 - This path uses no middle data broker.
@@ -120,6 +123,8 @@ WEBRTC_MCP_ICE_SERVERS='[
 
 - `issue_pass_key`
 - `get_latest_pass_key`
+- `manual_connect_guide`
+- `answer_offer_blob`
 - `list_sessions`
 - `revoke_session`
 - `server_status`
@@ -128,6 +133,8 @@ Typical usage from Claude/Codex:
 
 - Ask: `Call webrtc-terminal MCP tool get_latest_pass_key`
 - Optional rotate: `Call webrtc-terminal MCP tool get_latest_pass_key with rotate=true`
+- Guided connect: `Call webrtc-terminal MCP tool manual_connect_guide`
+- Offer answering on machine B: `Call webrtc-terminal MCP tool answer_offer_blob` (paste full `OFFER_BLOB=...` line)
 
 ## Codex install
 

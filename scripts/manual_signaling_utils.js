@@ -46,7 +46,12 @@ export function encodeBlob(payload) {
 }
 
 export function decodeBlob(blob, label = "blob") {
-  const text = Buffer.from(blob.trim(), "base64url").toString("utf8");
+  let normalized = blob.trim();
+  const prefixed = normalized.match(/^[A-Z_]+=(.+)$/s);
+  if (prefixed && prefixed[1]) {
+    normalized = prefixed[1].trim();
+  }
+  const text = Buffer.from(normalized, "base64url").toString("utf8");
   try {
     return JSON.parse(text);
   } catch (error) {

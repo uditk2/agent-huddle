@@ -27,8 +27,6 @@ async function main() {
   if (args.help) {
     usage(0);
   }
-  const connectUrl = args.connectUrl || DEFAULT_CONNECT_URL;
-
   const blob = args.blob || (await readAllStdin());
   if (!blob) {
     console.error("Missing offer blob. Pass --blob <OFFER_BLOB> or pipe it via stdin.");
@@ -40,6 +38,11 @@ async function main() {
     console.error("Invalid offer blob payload. Expected { passKey, offerSdp }.");
     process.exit(1);
   }
+
+  const connectUrl =
+    args.connectUrl ||
+    (typeof decoded.connectEndpoint === "string" && decoded.connectEndpoint.trim()) ||
+    DEFAULT_CONNECT_URL;
 
   const result = await postJson(connectUrl, {
     passKey: decoded.passKey,
@@ -65,8 +68,8 @@ async function main() {
     createdAt: new Date().toISOString(),
   });
 
-  process.stdout.write("Copy this ANSWER_BLOB back to machine A:\n");
-  process.stdout.write(`${answerBlob}\n`);
+  process.stdout.write("Copy this line back to machine A:\n");
+  process.stdout.write(`ANSWER_BLOB=${answerBlob}\n`);
 }
 
 main().catch((error) => {

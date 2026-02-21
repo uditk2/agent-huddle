@@ -11,7 +11,9 @@ import {
 } from "./manual_signaling_utils.js";
 
 function usage(exitCode = 1) {
-  console.error("Usage: node scripts/manual_offer_client.js --pass-key <PASSKEY> [--ice-servers '<JSON>']");
+  console.error(
+    "Usage: node scripts/manual_offer_client.js --pass-key <PASSKEY> [--connect-url <URL>] [--ice-servers '<JSON>']",
+  );
   process.exit(exitCode);
 }
 
@@ -82,6 +84,7 @@ async function main() {
       process.argv.slice(2),
       new Map([
         ["--pass-key", "passKey"],
+        ["--connect-url", "connectUrl"],
         ["--ice-servers", "iceServers"],
       ]),
     );
@@ -183,14 +186,15 @@ async function main() {
   const offerBlob = encodeBlob({
     version: 1,
     passKey: args.passKey.trim(),
+    connectEndpoint: args.connectUrl?.trim() || null,
     offerSdp,
     createdAt: new Date().toISOString(),
   });
 
-  process.stdout.write("\nPaste this OFFER_BLOB on machine B:\n");
-  process.stdout.write(`${offerBlob}\n\n`);
+  process.stdout.write("\nCopy this line to machine B:\n");
+  process.stdout.write(`OFFER_BLOB=${offerBlob}\n\n`);
 
-  const answerBlob = await askLine("Paste ANSWER_BLOB from machine B and press Enter:\n");
+  const answerBlob = await askLine("Paste ANSWER_BLOB line from machine B and press Enter:\n");
   const parsedAnswer = decodeBlob(answerBlob, "answer blob");
   if (!parsedAnswer || typeof parsedAnswer.answerSdp !== "string") {
     throw new Error("Invalid answer blob");
