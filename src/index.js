@@ -17,6 +17,7 @@ const CLOSED_SESSION_RETENTION_MS = 60 * 60 * 1000;
 
 const HTTP_HOST = process.env.WEBRTC_MCP_HTTP_HOST || "127.0.0.1";
 const HTTP_PORT = Number(process.env.WEBRTC_MCP_HTTP_PORT || 8787);
+const PUBLIC_BASE_URL = (process.env.WEBRTC_MCP_PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
 const ADMIN_TOKEN = process.env.WEBRTC_MCP_ADMIN_TOKEN || "";
 const SHELL_CMD = process.env.WEBRTC_MCP_SHELL || process.env.SHELL || "/bin/bash";
 const SHELL_ARGS = parseArgs(process.env.WEBRTC_MCP_SHELL_ARGS || "-li");
@@ -567,6 +568,9 @@ function sweepSessions() {
 }
 
 function getConnectUrl() {
+  if (PUBLIC_BASE_URL) {
+    return `${PUBLIC_BASE_URL}/api/connect`;
+  }
   return `http://${HTTP_HOST}:${runtimeHttpPort}/api/connect`;
 }
 
@@ -608,6 +612,8 @@ async function buildHttpServer() {
     res.json({
       httpHost: HTTP_HOST,
       httpPort: runtimeHttpPort,
+      publicBaseUrl: PUBLIC_BASE_URL || null,
+      connectEndpoint: getConnectUrl(),
       iceServers: ICE_SERVERS,
       keepalivePingMs: KEEPALIVE_PING_MS,
       keepaliveTimeoutMs: KEEPALIVE_TIMEOUT_MS,

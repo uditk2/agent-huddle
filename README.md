@@ -38,6 +38,7 @@ HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable
 
 - `WEBRTC_MCP_HTTP_HOST` (default: `127.0.0.1`)
 - `WEBRTC_MCP_HTTP_PORT` (default: `8787`)
+- `WEBRTC_MCP_PUBLIC_BASE_URL` (default: empty; when set, pass-key responses advertise `<public-base>/api/connect`)
 - `WEBRTC_MCP_ADMIN_TOKEN` (default: empty; if set, required for issuing/revoking/listing via HTTP)
 - `WEBRTC_MCP_SHELL` (default: `$SHELL` or `/bin/bash`)
 - `WEBRTC_MCP_SHELL_ARGS` (default: `-li`)
@@ -64,6 +65,44 @@ HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable
 3. Client submits `{ passKey, offerSdp }` to `/api/connect`.
 4. Server validates key (single-use + 10-minute TTL), returns `answerSdp`.
 5. Client applies answer, data channel opens, terminal starts.
+
+## Two-machine peer test (no broker)
+
+You can test direct peer WebRTC between two machines with only signaling HTTP exposed.
+
+1. On machine B (receiver), run with a public URL:
+```bash
+WEBRTC_MCP_ADMIN_TOKEN='token-b' \
+WEBRTC_MCP_PUBLIC_BASE_URL='https://mcp-b.synergiqai.com' \
+npm start
+```
+2. Ensure `https://mcp-b.synergiqai.com/api/connect` routes to B's local server (Cloudflare Tunnel is fine for signaling).
+3. Fetch B pass key (`get_latest_pass_key` tool or `GET /api/passkeys/latest` with admin token).
+4. On machine A (offerer), connect to B using B's `connectEndpoint` + pass key.
+
+Notes:
+- No middle data broker is required in this flow.
+- Network reachability is still required for signaling.
+- WebRTC data channels are encrypted in transit by DTLS.
+
+## ICE examples
+
+Google STUN only (minimal test):
+
+```bash
+WEBRTC_MCP_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302","stun:stun2.l.google.com:19302"]}]'
+```
+
+Add public TURN fallback for quick testing (shared/public, not for production secrets):
+
+```bash
+WEBRTC_MCP_ICE_SERVERS='[
+  {"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},
+  {"urls":["turn:openrelay.metered.ca:80"],"username":"openrelayproject","credential":"openrelayproject"},
+  {"urls":["turn:openrelay.metered.ca:443"],"username":"openrelayproject","credential":"openrelayproject"},
+  {"urls":["turn:openrelay.metered.ca:443?transport=tcp"],"username":"openrelayproject","credential":"openrelayproject"}
+]'
+```
 
 ## MCP tools
 
