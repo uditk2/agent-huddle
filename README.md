@@ -77,7 +77,13 @@ HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable
 This runs:
 
 ```bash
-codex mcp add webrtc-terminal -- /absolute/path/to/scripts/run_mcp.sh
+codex mcp add webrtc-terminal -- ~/.local/share/agent-huddle/webrtc-terminal-mcp/scripts/run_mcp.sh
+```
+
+Optional custom runtime dir:
+
+```bash
+./scripts/install_codex.sh /custom/runtime/dir
 ```
 
 ## Claude Code install
@@ -85,42 +91,56 @@ codex mcp add webrtc-terminal -- /absolute/path/to/scripts/run_mcp.sh
 Use:
 
 ```bash
-./scripts/install_claude_code.sh project
+./scripts/install_claude_code.sh
 ```
 
 Scopes:
 
-- `project` (default): available only in this repo
-- `user`: available across all repos for this user
+- `user` (default): available across all repos for this user
+- `project`: available only in this repo
 - `local`: current local workspace scope in Claude
 
 Examples:
 
 ```bash
-./scripts/install_claude_code.sh project
 ./scripts/install_claude_code.sh user
+./scripts/install_claude_code.sh project
 ```
 
 The installer now uses `claude mcp add` directly, so Claude registers the server in the selected scope.
 If both `project` and `user` scopes exist with the same name, project scope takes precedence in this repo.
 
+Optional custom runtime dir:
+
+```bash
+./scripts/install_claude_code.sh user /custom/runtime/dir
+```
+
+## Dependency Isolation
+
+Installers copy this repo into an isolated runtime directory and install npm dependencies there:
+
+- default runtime dir: `~/.local/share/agent-huddle/webrtc-terminal-mcp`
+- source repo stays clean (no `node_modules` required after install)
+- both Claude and Codex can point to the same isolated runtime
+
 ## If Claude shows `Failed to connect`
 
-1. Install dependencies:
+1. Reinstall to refresh isolated runtime:
 ```bash
-npm install
+./scripts/install_claude_code.sh user
 ```
 2. Run launcher directly once:
 ```bash
-./scripts/run_mcp.sh
+~/.local/share/agent-huddle/webrtc-terminal-mcp/scripts/run_mcp.sh
 ```
 3. Check error log:
 ```bash
-tail -n 120 .webrtc-terminal-mcp.log
+tail -n 120 ~/.local/share/agent-huddle/webrtc-terminal-mcp/.webrtc-terminal-mcp.log
 ```
-4. Reinstall server entry:
+4. Recheck MCP entry:
 ```bash
-./scripts/install_claude_code.sh user
+claude mcp get webrtc-terminal
 ```
 
 ## Quick test
