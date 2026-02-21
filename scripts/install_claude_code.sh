@@ -4,8 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCOPE="${1:-project}"
 SERVER_NAME="webrtc-terminal"
-SERVER_CMD="node"
-SERVER_ARG="$REPO_DIR/src/index.js"
+SERVER_CMD="$REPO_DIR/scripts/run_mcp.sh"
 
 if ! command -v claude >/dev/null 2>&1; then
   echo "Error: 'claude' CLI is not installed or not in PATH."
@@ -20,7 +19,7 @@ fi
 # Remove existing entry in the selected scope to keep install idempotent.
 claude mcp remove "$SERVER_NAME" -s "$SCOPE" >/dev/null 2>&1 || true
 
-claude mcp add -s "$SCOPE" "$SERVER_NAME" -- "$SERVER_CMD" "$SERVER_ARG"
+claude mcp add -s "$SCOPE" "$SERVER_NAME" -- "$SERVER_CMD"
 
 echo "Claude Code MCP server installed:"
 claude mcp get "$SERVER_NAME"

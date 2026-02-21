@@ -6,20 +6,8 @@ import process from "node:process";
 import cors from "cors";
 import express from "express";
 import { z } from "zod";
-import * as nodePty from "node-pty";
-import * as wrtcImport from "@roamhq/wrtc";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-
-const wrtcAny = {
-  ...(wrtcImport.default ?? {}),
-  ...wrtcImport,
-};
-
-const RTCPeerConnectionCtor = wrtcAny.RTCPeerConnection;
-if (!RTCPeerConnectionCtor) {
-  throw new Error("Unable to load RTCPeerConnection from @roamhq/wrtc");
-}
 
 const PASSKEY_TTL_MS = 10 * 60 * 1000;
 const KEEPALIVE_PING_MS = 20 * 1000;
@@ -38,6 +26,12 @@ const ICE_SERVERS = parseIceServers(
   process.env.WEBRTC_MCP_ICE_SERVERS ||
     JSON.stringify([{ urls: ["stun:stun.l.google.com:19302"] }]),
 );
+
+let runtimeHttpPort = HTTP_PORT;
+let wrtcCtor = null;
+let wrtcLoadError = null;
+let nodePtyModule = null;
+let nodePtyLoadError = null;
 
 const sessions = new Map();
 const passIndex = new Map();
@@ -76,6 +70,47 @@ function parseIceServers(raw) {
     return parsed;
   } catch (error) {
     throw new Error(`Invalid WEBRTC_MCP_ICE_SERVERS JSON: ${error.message}`);
+  }
+}
+
+function formatError(error) {
+  if (!error) return "unknown error";
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+async function resolveRTCPeerConnectionCtor() {
+  if (wrtcCtor) return wrtcCtor;
+  if (wrtcLoadError) throw wrtcLoadError;
+
+  try {
+    const wrtcImport = await import("@roamhq/wrtc");
+    const wrtcAny = {
+      ...(wrtcImport.default ?? {}),
+      ...wrtcImport,
+    };
+    const ctor = wrtcAny.RTCPeerConnection;
+    if (!ctor) {
+      throw new Error("Unable to load RTCPeerConnection from @roamhq/wrtc");
+    }
+    wrtcCtor = ctor;
+    return wrtcCtor;
+  } catch (error) {
+    wrtcLoadError = error;
+    throw error;
+  }
+}
+
+async function resolveNodePty() {
+  if (nodePtyModule) return nodePtyModule;
+  if (nodePtyLoadError) throw nodePtyLoadError;
+
+  try {
+    nodePtyModule = await import("node-pty");
+    return nodePtyModule;
+  } catch (error) {
+    nodePtyLoadError = error;
+    throw error;
   }
 }
 
@@ -219,8 +254,9 @@ function startKeepalive(session) {
   session.keepaliveTimer.unref?.();
 }
 
-function startTerminal(session) {
+async function startTerminal(session) {
   if (session.terminal) return;
+  const nodePty = await resolveNodePty();
 
   const term = nodePty.spawn(SHELL_CMD, SHELL_ARGS, {
     name: "xterm-256color",
@@ -301,7 +337,13 @@ function attachDataChannel(session, channel) {
   channel.onopen = () => {
     session.status = "connected";
     session.connectedAt = Date.now();
-    startTerminal(session);
+    startTerminal(session).catch((error) => {
+      sendChannel(session, {
+        type: "error",
+        error: `terminal-start-failed:${formatError(error)}`,
+      });
+      closeSession(session, `terminal-start-failed:${formatError(error)}`);
+    });
     startKeepalive(session);
     sendChannel(session, {
       type: "hello",
@@ -407,6 +449,17 @@ function setupPeerHandlers(session, peerConnection) {
 }
 
 async function connectOffer({ passKey, offerSdp, label }) {
+  let RTCPeerConnectionCtor;
+  try {
+    RTCPeerConnectionCtor = await resolveRTCPeerConnectionCtor();
+  } catch (error) {
+    return {
+      error: "webrtc-unavailable",
+      status: 503,
+      detail: formatError(error),
+    };
+  }
+
   const consumed = consumeSessionFromPassKey(passKey);
   if (consumed.error) {
     return { error: consumed.error, status: 401 };
@@ -458,7 +511,27 @@ function sweepSessions() {
   }
 }
 
-function buildHttpServer() {
+function getConnectUrl() {
+  return `http://${HTTP_HOST}:${runtimeHttpPort}/api/connect`;
+}
+
+function listenHttp(app, port) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, HTTP_HOST);
+    const onError = (error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve(server);
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+  });
+}
+
+async function buildHttpServer() {
   const app = express();
   app.disable("x-powered-by");
   app.use(cors());
@@ -478,6 +551,8 @@ function buildHttpServer() {
 
   app.get("/api/config", (_, res) => {
     res.json({
+      httpHost: HTTP_HOST,
+      httpPort: runtimeHttpPort,
       iceServers: ICE_SERVERS,
       keepalivePingMs: KEEPALIVE_PING_MS,
       keepaliveTimeoutMs: KEEPALIVE_TIMEOUT_MS,
@@ -565,9 +640,26 @@ function buildHttpServer() {
 
   app.use(express.static(new URL("../web", import.meta.url).pathname));
 
-  return app.listen(HTTP_PORT, HTTP_HOST, () => {
-    log(`HTTP signaling ready on http://${HTTP_HOST}:${HTTP_PORT}`);
-  });
+  let server;
+  try {
+    server = await listenHttp(app, HTTP_PORT);
+  } catch (error) {
+    if (error?.code !== "EADDRINUSE" && error?.code !== "EPERM") {
+      throw error;
+    }
+    log(
+      `could not bind ${HTTP_HOST}:${HTTP_PORT} (${error.code}); falling back to an ephemeral port`,
+    );
+    server = await listenHttp(app, 0);
+  }
+
+  const address = server.address();
+  if (address && typeof address === "object" && typeof address.port === "number") {
+    runtimeHttpPort = address.port;
+  }
+
+  log(`HTTP signaling ready on http://${HTTP_HOST}:${runtimeHttpPort}`);
+  return server;
 }
 
 function asToolText(payload) {
@@ -600,7 +692,7 @@ function buildMcpServer() {
         passKey,
         issuedAt: nowIso(session.issuedAt),
         expiresAt: nowIso(session.expiresAt),
-        connectEndpoint: `http://${HTTP_HOST}:${HTTP_PORT}/api/connect`,
+        connectEndpoint: getConnectUrl(),
       });
     },
   );
@@ -646,11 +738,19 @@ function buildMcpServer() {
     async () => {
       return asToolText({
         httpHost: HTTP_HOST,
-        httpPort: HTTP_PORT,
-        connectUrl: `http://${HTTP_HOST}:${HTTP_PORT}/api/connect`,
+        httpPort: runtimeHttpPort,
+        connectUrl: getConnectUrl(),
         passkeyTtlMs: PASSKEY_TTL_MS,
         keepalivePingMs: KEEPALIVE_PING_MS,
         keepaliveTimeoutMs: KEEPALIVE_TIMEOUT_MS,
+        dependencies: {
+          webrtc: wrtcLoadError ? `error:${formatError(wrtcLoadError)}` : wrtcCtor ? "loaded" : "not-loaded-yet",
+          nodePty: nodePtyLoadError
+            ? `error:${formatError(nodePtyLoadError)}`
+            : nodePtyModule
+              ? "loaded"
+              : "not-loaded-yet",
+        },
         shell: {
           command: SHELL_CMD,
           args: SHELL_ARGS,
@@ -679,7 +779,7 @@ function setupProcessGuards(httpServer) {
 }
 
 async function main() {
-  const httpServer = buildHttpServer();
+  const httpServer = await buildHttpServer();
   setupProcessGuards(httpServer);
 
   setInterval(sweepSessions, SESSION_SWEEP_MS).unref?.();

@@ -1,9 +1,7 @@
 {
   "name": "webrtc-terminal",
-  "command": "node",
-  "args": [
-    "<REPO_PATH>/src/index.js"
-  ],
+  "command": "<REPO_PATH>/scripts/run_mcp.sh",
+  "args": [],
   "env": {
     "WEBRTC_MCP_HTTP_HOST": "127.0.0.1",
     "WEBRTC_MCP_HTTP_PORT": "8787",

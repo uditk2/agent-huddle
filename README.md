@@ -30,7 +30,7 @@ npm install
 WEBRTC_MCP_ADMIN_TOKEN='change-this' npm start
 ```
 
-HTTP UI and API will be available at `http://127.0.0.1:8787` by default.
+HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable, the server falls back to a random free local port.
 
 ## Environment variables
 
@@ -77,7 +77,7 @@ HTTP UI and API will be available at `http://127.0.0.1:8787` by default.
 This runs:
 
 ```bash
-codex mcp add webrtc-terminal -- node /absolute/path/to/src/index.js
+codex mcp add webrtc-terminal -- /absolute/path/to/scripts/run_mcp.sh
 ```
 
 ## Claude Code install
@@ -104,10 +104,30 @@ Examples:
 The installer now uses `claude mcp add` directly, so Claude registers the server in the selected scope.
 If both `project` and `user` scopes exist with the same name, project scope takes precedence in this repo.
 
+## If Claude shows `Failed to connect`
+
+1. Install dependencies:
+```bash
+npm install
+```
+2. Run launcher directly once:
+```bash
+./scripts/run_mcp.sh
+```
+3. Check error log:
+```bash
+tail -n 120 .webrtc-terminal-mcp.log
+```
+4. Reinstall server entry:
+```bash
+./scripts/install_claude_code.sh user
+```
+
 ## Quick test
 
 1. Start server: `WEBRTC_MCP_ADMIN_TOKEN='localtest' npm start`
-2. Open `http://127.0.0.1:8787/client.html`
-3. Issue key with admin token `localtest`
-4. Connect using generated pass key
-5. Run terminal commands through the client
+2. Call MCP tool `server_status` to read the active `httpPort` (it may differ from `8787` if fallback occurred)
+3. Open `http://127.0.0.1:<httpPort>/client.html`
+4. Issue key with admin token `localtest`
+5. Connect using generated pass key
+6. Run terminal commands through the client
