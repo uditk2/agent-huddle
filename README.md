@@ -6,7 +6,9 @@ MCP server that issues one-time pass keys and only accepts WebRTC terminal conne
 
 - Runs as an MCP server over `stdio`.
 - Exposes HTTP signaling endpoints for WebRTC connect flow.
+- Auto-generates an active one-time pass key on startup.
 - Issues one-time pass keys that expire in exactly 10 minutes.
+- Keeps one active pass key available and rotates it after use/expiry.
 - Rejects connection attempts without valid, unused, unexpired pass key.
 - Starts an interactive terminal (`node-pty`) only after successful pass key connect.
 - Keeps active sessions alive with `ping`/`pong` keepalive.
@@ -47,6 +49,8 @@ HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable
 - `GET /health`
 - `GET /api/config`
 - `POST /api/passkeys/issue` (admin token if configured)
+- `GET /api/passkeys/latest` (admin)
+- `POST /api/passkeys/rotate` (admin)
 - `POST /api/connect`
 - `GET /api/sessions` (admin)
 - `GET /api/sessions/:sessionId` (admin)
@@ -55,7 +59,7 @@ HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable
 
 ### Connect flow
 
-1. Issue pass key (`/api/passkeys/issue` or MCP tool `issue_pass_key`).
+1. Get pass key (`/api/passkeys/latest` or MCP tool `get_latest_pass_key`).
 2. Client creates WebRTC offer and gathers ICE.
 3. Client submits `{ passKey, offerSdp }` to `/api/connect`.
 4. Server validates key (single-use + 10-minute TTL), returns `answerSdp`.
@@ -64,9 +68,15 @@ HTTP UI and API bind to `127.0.0.1:8787` by default. If that port is unavailable
 ## MCP tools
 
 - `issue_pass_key`
+- `get_latest_pass_key`
 - `list_sessions`
 - `revoke_session`
 - `server_status`
+
+Typical usage from Claude/Codex:
+
+- Ask: `Call webrtc-terminal MCP tool get_latest_pass_key`
+- Optional rotate: `Call webrtc-terminal MCP tool get_latest_pass_key with rotate=true`
 
 ## Codex install
 

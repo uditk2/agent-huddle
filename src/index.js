@@ -35,6 +35,8 @@ let nodePtyLoadError = null;
 
 const sessions = new Map();
 const passIndex = new Map();
+let activePassSessionId = null;
+let activePassKey = null;
 
 const issueSchema = z.object({
   label: z.string().trim().max(120).optional(),
@@ -186,12 +188,57 @@ function issuePassKey({ label, source = "http" } = {}) {
   };
 }
 
+function isSessionUsableForPass(session) {
+  if (!session) return false;
+  if (session.status !== "issued") return false;
+  if (session.consumedAt) return false;
+  if (session.closing) return false;
+  if (Date.now() > session.expiresAt) return false;
+  return true;
+}
+
+function getActivePassSession() {
+  if (!activePassSessionId) return null;
+  return sessions.get(activePassSessionId) || null;
+}
+
+function setActivePass(session, passKey) {
+  activePassSessionId = session.sessionId;
+  activePassKey = passKey;
+}
+
+function ensureActivePassKey({ source = "auto", label = "active-pass" } = {}) {
+  const active = getActivePassSession();
+  if (active && activePassKey && isSessionUsableForPass(active)) {
+    return { session: active, passKey: activePassKey, reused: true };
+  }
+
+  const issued = issuePassKey({ source, label });
+  setActivePass(issued.session, issued.passKey);
+  return { session: issued.session, passKey: issued.passKey, reused: false };
+}
+
+function rotateActivePassKey({ source = "auto-rotate", label = "active-pass-rotate" } = {}) {
+  const active = getActivePassSession();
+  if (active && isSessionUsableForPass(active)) {
+    closeSession(active, "passkey-rotated");
+  }
+  const issued = issuePassKey({ source, label });
+  setActivePass(issued.session, issued.passKey);
+  return issued;
+}
+
 function closeSession(session, reason = "closed") {
   if (!session || session.closing) return;
   session.closing = true;
   session.status = "closed";
   session.closeReason = reason;
   session.closedAt = Date.now();
+
+  if (session.sessionId === activePassSessionId) {
+    activePassSessionId = null;
+    activePassKey = null;
+  }
 
   passIndex.delete(session.passHash);
 
@@ -417,6 +464,7 @@ function consumeSessionFromPassKey(passKey) {
 
   if (Date.now() > session.expiresAt) {
     closeSession(session, "passkey-expired");
+    ensureActivePassKey({ source: "auto-after-expire", label: "active-pass" });
     return { error: "expired-passkey" };
   }
 
@@ -427,6 +475,11 @@ function consumeSessionFromPassKey(passKey) {
   session.consumedAt = Date.now();
   session.status = "connecting";
   passIndex.delete(passHash);
+
+  if (session.sessionId === activePassSessionId) {
+    // Keep a fresh one-time key available for the next requester.
+    rotateActivePassKey({ source: "auto-after-consume", label: "active-pass" });
+  }
 
   return { session };
 }
@@ -509,6 +562,8 @@ function sweepSessions() {
       sessions.delete(session.sessionId);
     }
   }
+
+  ensureActivePassKey({ source: "auto-sweep", label: "active-pass" });
 }
 
 function getConnectUrl() {
@@ -577,6 +632,21 @@ async function buildHttpServer() {
       passKey,
       issuedAt: nowIso(session.issuedAt),
       expiresAt: nowIso(session.expiresAt),
+    });
+  });
+
+  app.get("/api/passkeys/latest", requireAdmin, (_, res) => {
+    res.json(activePassPayload());
+  });
+
+  app.post("/api/passkeys/rotate", requireAdmin, (_, res) => {
+    const issued = rotateActivePassKey({ source: "http-rotate", label: "active-pass" });
+    res.status(201).json({
+      sessionId: issued.session.sessionId,
+      passKey: issued.passKey,
+      issuedAt: nowIso(issued.session.issuedAt),
+      expiresAt: nowIso(issued.session.expiresAt),
+      connectEndpoint: getConnectUrl(),
     });
   });
 
@@ -673,6 +743,18 @@ function asToolText(payload) {
   };
 }
 
+function activePassPayload() {
+  const ensured = ensureActivePassKey({ source: "auto-read", label: "active-pass" });
+  return {
+    sessionId: ensured.session.sessionId,
+    passKey: ensured.passKey,
+    issuedAt: nowIso(ensured.session.issuedAt),
+    expiresAt: nowIso(ensured.session.expiresAt),
+    connectEndpoint: getConnectUrl(),
+    reused: ensured.reused,
+  };
+}
+
 function buildMcpServer() {
   const mcp = new McpServer({
     name: "webrtc-terminal-mcp",
@@ -694,6 +776,28 @@ function buildMcpServer() {
         expiresAt: nowIso(session.expiresAt),
         connectEndpoint: getConnectUrl(),
       });
+    },
+  );
+
+  mcp.tool(
+    "get_latest_pass_key",
+    "Return the active one-time pass key. A key is auto-generated on startup and auto-rotated after use/expiry.",
+    {
+      rotate: z.boolean().optional(),
+    },
+    async ({ rotate }) => {
+      if (rotate) {
+        const issued = rotateActivePassKey({ source: "mcp-rotate", label: "active-pass" });
+        return asToolText({
+          sessionId: issued.session.sessionId,
+          passKey: issued.passKey,
+          issuedAt: nowIso(issued.session.issuedAt),
+          expiresAt: nowIso(issued.session.expiresAt),
+          connectEndpoint: getConnectUrl(),
+          rotated: true,
+        });
+      }
+      return asToolText(activePassPayload());
     },
   );
 
@@ -736,6 +840,7 @@ function buildMcpServer() {
     "Return server runtime status and endpoint information.",
     {},
     async () => {
+      const active = activePassPayload();
       return asToolText({
         httpHost: HTTP_HOST,
         httpPort: runtimeHttpPort,
@@ -757,6 +862,10 @@ function buildMcpServer() {
           cwd: SHELL_CWD,
         },
         sessions: sessions.size,
+        activePass: {
+          sessionId: active.sessionId,
+          expiresAt: active.expiresAt,
+        },
       });
     },
   );
@@ -781,6 +890,7 @@ function setupProcessGuards(httpServer) {
 async function main() {
   const httpServer = await buildHttpServer();
   setupProcessGuards(httpServer);
+  ensureActivePassKey({ source: "startup", label: "active-pass" });
 
   setInterval(sweepSessions, SESSION_SWEEP_MS).unref?.();
 
