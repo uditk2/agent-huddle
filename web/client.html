@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebRTC Terminal MCP Client</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fa;
+      --panel: #ffffff;
+      --ink: #101828;
+      --muted: #5f6c7b;
+      --accent: #0f766e;
+      --border: #d0d5dd;
+      --terminal-bg: #0b1020;
+      --terminal-ink: #d2e4ff;
+    }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 15% 0%, #e8f4ff, var(--bg) 40%);
+      color: var(--ink);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 32px auto;
+      padding: 0 16px;
+      display: grid;
+      gap: 16px;
+    }
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      background: var(--panel);
+      box-shadow: 0 6px 20px rgba(16, 24, 40, 0.06);
+    }
+    h1 { margin: 0 0 12px; font-size: 1.5rem; }
+    h2 { margin: 0 0 12px; font-size: 1.1rem; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    input, button {
+      font: inherit;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+    }
+    input { flex: 1; min-width: 180px; }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+      border: 1px solid var(--accent);
+    }
+    button.secondary {
+      background: #ffffff;
+      color: var(--ink);
+    }
+    .status {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+    #terminal {
+      margin-top: 8px;
+      min-height: 380px;
+      max-height: 56vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      background: var(--terminal-bg);
+      color: var(--terminal-ink);
+      border-radius: 10px;
+      padding: 10px;
+      border: 1px solid #121a36;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.92rem;
+      line-height: 1.35;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <h1>WebRTC Terminal MCP Client</h1>
+      <div class="status">One-time pass key TTL: <span class="mono">10 minutes</span>. Pass key is consumed on first successful connect call.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Issue Pass Key (Admin)</h2>
+      <div class="row">
+        <input id="adminToken" type="password" placeholder="Admin token (optional unless server requires it)" />
+        <input id="issueLabel" placeholder="Session label (optional)" />
+        <button id="issueBtn">Issue Key</button>
+      </div>
+      <div id="issueStatus" class="status mono"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Connect</h2>
+      <div class="row">
+        <input id="passKey" placeholder="PASS-KEY-HERE" class="mono" />
+        <button id="connectBtn">Connect</button>
+        <button id="ctrlCBtn" class="secondary">Send Ctrl+C</button>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <input id="lineInput" placeholder="Type command and press Enter" class="mono" />
+      </div>
+      <div id="connStatus" class="status mono">Not connected</div>
+      <pre id="terminal" aria-live="polite"></pre>
+    </div>
+  </div>
+
+  <script>
+    const issueStatus = document.getElementById("issueStatus");
+    const connStatus = document.getElementById("connStatus");
+    const terminalEl = document.getElementById("terminal");
+    const lineInput = document.getElementById("lineInput");
+
+    let peerConnection;
+    let dataChannel;
+
+    function appendTerminal(text) {
+      terminalEl.textContent += text;
+      terminalEl.scrollTop = terminalEl.scrollHeight;
+    }
+
+    function setStatus(text) {
+      connStatus.textContent = text;
+    }
+
+    async function waitIceComplete(pc) {
+      if (pc.iceGatheringState === "complete") return;
+      await new Promise((resolve) => {
+        const check = () => {
+          if (pc.iceGatheringState === "complete") {
+            pc.removeEventListener("icegatheringstatechange", check);
+            resolve();
+          }
+        };
+        pc.addEventListener("icegatheringstatechange", check);
+      });
+    }
+
+    function sendPayload(payload) {
+      if (!dataChannel || dataChannel.readyState !== "open") return;
+      dataChannel.send(JSON.stringify(payload));
+    }
+
+    async function issuePassKey() {
+      issueStatus.textContent = "Issuing...";
+      const adminToken = document.getElementById("adminToken").value.trim();
+      const label = document.getElementById("issueLabel").value.trim();
+
+      const response = await fetch("/api/passkeys/issue", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(adminToken ? { "x-admin-token": adminToken } : {}),
+        },
+        body: JSON.stringify({ label }),
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        issueStatus.textContent = `Issue failed: ${payload.error || response.status}`;
+        return;
+      }
+
+      issueStatus.textContent = `sessionId=${payload.sessionId} passKey=${payload.passKey} expiresAt=${payload.expiresAt}`;
+      document.getElementById("passKey").value = payload.passKey;
+    }
+
+    async function connect() {
+      try {
+        const passKey = document.getElementById("passKey").value.trim();
+        if (!passKey) {
+          setStatus("Pass key is required");
+          return;
+        }
+
+        setStatus("Loading config...");
+        const cfgRes = await fetch("/api/config");
+        const cfg = await cfgRes.json();
+
+        peerConnection = new RTCPeerConnection({ iceServers: cfg.iceServers || [] });
+        dataChannel = peerConnection.createDataChannel("terminal", { ordered: true });
+
+        dataChannel.onopen = () => setStatus("Connected");
+        dataChannel.onclose = () => setStatus("Disconnected");
+
+        dataChannel.onmessage = (event) => {
+          let message;
+          try {
+            message = JSON.parse(event.data);
+          } catch {
+            appendTerminal(event.data);
+            return;
+          }
+
+          if (message.type === "stdout" && typeof message.data === "string") {
+            appendTerminal(message.data);
+            return;
+          }
+
+          if (message.type === "hello") {
+            appendTerminal(`\n[session ${message.sessionId}] terminal ready\n`);
+            return;
+          }
+
+          if (message.type === "ping") {
+            sendPayload({ type: "pong", ts: Date.now() });
+            return;
+          }
+
+          if (message.type === "exit") {
+            appendTerminal(`\n[terminal exited code=${message.exitCode}]\n`);
+          }
+        };
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        await waitIceComplete(peerConnection);
+
+        setStatus("Submitting offer...");
+        const connectRes = await fetch("/api/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            passKey,
+            offerSdp: peerConnection.localDescription.sdp,
+          }),
+        });
+
+        const connectPayload = await connectRes.json();
+        if (!connectRes.ok) {
+          setStatus(`Connect failed: ${connectPayload.error || connectRes.status}`);
+          return;
+        }
+
+        await peerConnection.setRemoteDescription({
+          type: "answer",
+          sdp: connectPayload.answerSdp,
+        });
+
+        setStatus(`Connected (session ${connectPayload.sessionId})`);
+      } catch (error) {
+        setStatus(`Connect error: ${error.message}`);
+      }
+    }
+
+    document.getElementById("issueBtn").addEventListener("click", () => {
+      issuePassKey().catch((err) => {
+        issueStatus.textContent = `Issue error: ${err.message}`;
+      });
+    });
+
+    document.getElementById("connectBtn").addEventListener("click", () => {
+      connect();
+    });
+
+    document.getElementById("ctrlCBtn").addEventListener("click", () => {
+      sendPayload({ type: "stdin", data: "\u0003" });
+    });
+
+    lineInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      const line = lineInput.value;
+      lineInput.value = "";
+      sendPayload({ type: "stdin", data: `${line}\n` });
+    });
+  </script>
+</body>
+</html>
