@@ -570,6 +570,58 @@ async function connectOffer({ passKey, offerSdp, label }) {
   }
 }
 
+async function answerOfferBlobInternal({ offerBlob, label }) {
+  let parsed;
+  try {
+    parsed = decodeBlob(offerBlob, "offerBlob");
+  } catch (error) {
+    return { error: "invalid-offer-blob", detail: formatError(error), status: 400 };
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    typeof parsed.passKey !== "string" ||
+    typeof parsed.offerSdp !== "string"
+  ) {
+    return {
+      error: "invalid-offer-payload",
+      detail: "Expected offer blob payload with passKey and offerSdp",
+      status: 400,
+    };
+  }
+
+  const result = await connectOffer({
+    passKey: parsed.passKey,
+    offerSdp: parsed.offerSdp,
+    label: label || "manual-blob",
+  });
+
+  if (result.error) {
+    return {
+      error: result.error,
+      detail: result.detail,
+      status: result.status || 400,
+    };
+  }
+
+  const answerPayload = {
+    version: 1,
+    answerSdp: result.answerSdp,
+    sessionId: result.session.sessionId,
+    expiresAt: nowIso(result.session.expiresAt),
+    createdAt: nowIso(),
+  };
+  const answerBlob = encodeBlob(answerPayload);
+  return {
+    ok: true,
+    sessionId: result.session.sessionId,
+    expiresAt: nowIso(result.session.expiresAt),
+    answerBlob,
+    answerBlobLine: `ANSWER_BLOB=${answerBlob}`,
+  };
+}
+
 function sweepSessions() {
   const now = Date.now();
   for (const session of sessions.values()) {
@@ -895,6 +947,97 @@ function buildMcpServer() {
   );
 
   mcp.tool(
+    "connect",
+    "Guided cross-machine connect flow. Choose role machine_a or machine_b and follow the returned next steps.",
+    {
+      role: z.enum(["machine_a", "machine_b"]).optional(),
+      passKey: z.string().trim().min(4).max(128).optional(),
+      connectEndpoint: z.string().trim().url().optional(),
+      offerBlob: z.string().min(16).optional(),
+      label: z.string().trim().max(120).optional(),
+    },
+    async ({ role, passKey, connectEndpoint, offerBlob, label }) => {
+      if (!role) {
+        return asToolText({
+          chooseOne: [
+            {
+              role: "machine_a",
+              description: "Use this on Machine A (offerer). You will run the A command and paste ANSWER_BLOB.",
+            },
+            {
+              role: "machine_b",
+              description: "Use this on Machine B (answerer). You will generate pass key and convert OFFER_BLOB to ANSWER_BLOB.",
+            },
+          ],
+          howToStart: "Choose one role on this machine, then call connect again with that role.",
+          examples: [
+            { tool: "connect", args: { role: "machine_a" } },
+            { tool: "connect", args: { role: "machine_b" } },
+          ],
+        });
+      }
+
+      if (role === "machine_b") {
+        if (offerBlob) {
+          const answered = await answerOfferBlobInternal({ offerBlob, label });
+          if (answered.error) {
+            return asToolText(answered);
+          }
+          return asToolText({
+            role: "machine_b",
+            step: "Send answer back to machine_a",
+            ...answered,
+            next: "Copy answerBlobLine and paste it into the waiting Machine A terminal prompt.",
+          });
+        }
+
+        const active = activePassPayload();
+        return asToolText({
+          role: "machine_b",
+          passKey: active.passKey,
+          connectEndpoint: active.connectEndpoint,
+          machineAStep: `npm run connect:a -- --pass-key '${active.passKey}' --connect-url '${active.connectEndpoint}'`,
+          machineANextToolCall: {
+            tool: "connect",
+            args: {
+              role: "machine_a",
+              passKey: active.passKey,
+              connectEndpoint: active.connectEndpoint,
+            },
+          },
+          machineBNextToolCall: {
+            tool: "connect",
+            args: {
+              role: "machine_b",
+              offerBlob: "OFFER_BLOB=...",
+            },
+          },
+          help: "Run machineAStep on Machine A. When Machine A returns OFFER_BLOB line, call connect again on Machine B with role=machine_b and offerBlob.",
+        });
+      }
+
+      if (!passKey || !connectEndpoint) {
+        return asToolText({
+          role: "machine_a",
+          error: "missing-passkey-or-endpoint",
+          help: "On Machine B call connect with role=machine_b first, then copy passKey and connectEndpoint (or machineAStep) here.",
+          expectedArgs: {
+            role: "machine_a",
+            passKey: "<from machine_b>",
+            connectEndpoint: "<from machine_b>",
+          },
+        });
+      }
+
+      return asToolText({
+        role: "machine_a",
+        machineAStep: `npm run connect:a -- --pass-key '${passKey}' --connect-url '${connectEndpoint}'`,
+        next: "Run machineAStep in terminal on Machine A. It will print OFFER_BLOB line. Send that line to Machine B and call connect there with role=machine_b and offerBlob.",
+      });
+    },
+  );
+
+  mcp.tool(
     "manual_connect_guide",
     "Return guided next steps for copy/paste cross-machine connect via Codex/Claude.",
     {},
@@ -925,54 +1068,8 @@ function buildMcpServer() {
       label: z.string().trim().max(120).optional(),
     },
     async ({ offerBlob, label }) => {
-      let parsed;
-      try {
-        parsed = decodeBlob(offerBlob, "offerBlob");
-      } catch (error) {
-        return asToolText({ error: "invalid-offer-blob", detail: formatError(error) });
-      }
-
-      if (
-        !parsed ||
-        typeof parsed !== "object" ||
-        typeof parsed.passKey !== "string" ||
-        typeof parsed.offerSdp !== "string"
-      ) {
-        return asToolText({
-          error: "invalid-offer-payload",
-          detail: "Expected offer blob payload with passKey and offerSdp",
-        });
-      }
-
-      const result = await connectOffer({
-        passKey: parsed.passKey,
-        offerSdp: parsed.offerSdp,
-        label: label || "manual-blob",
-      });
-
-      if (result.error) {
-        return asToolText({
-          error: result.error,
-          detail: result.detail,
-          status: result.status || 400,
-        });
-      }
-
-      const answerPayload = {
-        version: 1,
-        answerSdp: result.answerSdp,
-        sessionId: result.session.sessionId,
-        expiresAt: nowIso(result.session.expiresAt),
-        createdAt: nowIso(),
-      };
-      const answerBlob = encodeBlob(answerPayload);
-      return asToolText({
-        ok: true,
-        sessionId: result.session.sessionId,
-        expiresAt: nowIso(result.session.expiresAt),
-        answerBlob,
-        answerBlobLine: `ANSWER_BLOB=${answerBlob}`,
-      });
+      const answered = await answerOfferBlobInternal({ offerBlob, label });
+      return asToolText(answered);
     },
   );
 

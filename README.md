@@ -25,19 +25,24 @@ Notes:
 - Machine A = offerer
 - Machine B = answerer
 
-2. On machine B, call MCP tool:
-- `manual_connect_guide`
+2. On either machine, call MCP tool:
+- `connect`
+- It shows two choices: `machine_a` or `machine_b`.
 
-3. Run returned `machineAStep` on machine A. It prints one line:
+3. On machine B, call:
+- `connect` with `role=machine_b`
+- Copy returned `machineAStep` and run it on machine A.
+
+4. Machine A prints one line:
 - `OFFER_BLOB=...`
 
-4. On machine B, call MCP tool:
-- `answer_offer_blob` with `offerBlob` = full `OFFER_BLOB=...` line
+5. On machine B, call:
+- `connect` with `role=machine_b` and `offerBlob='OFFER_BLOB=...'`
 
-5. Copy `answerBlobLine` from machine B back into machine A prompt:
+6. Copy `answerBlobLine` from machine B back into machine A prompt:
 - `ANSWER_BLOB=...`
 
-6. Session connects and stays active with keepalive.
+7. Session connects and stays active with keepalive.
 
 ## A/B CLI Commands
 
@@ -46,17 +51,14 @@ Machine A:
 npm run connect:a -- --pass-key '<PASSKEY>' --connect-url '<CONNECT_ENDPOINT>'
 ```
 
-Machine B (fallback if not using MCP `answer_offer_blob`):
+Machine B (fallback if not using MCP `connect`):
 ```bash
 npm run connect:b -- --blob 'OFFER_BLOB=...'
 ```
 
-## MCP Tools
+## MCP Tools (Default)
 
-- `manual_connect_guide`
-- `answer_offer_blob`
-- `get_latest_pass_key`
-- `issue_pass_key`
-- `list_sessions`
-- `revoke_session`
+- `connect`
 - `server_status`
+
+For full/advanced tool list, see `DETAILREADME.md`.
