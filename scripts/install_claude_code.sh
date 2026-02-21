@@ -7,6 +7,18 @@ RUNTIME_DIR_ARG="${2:-}"
 SERVER_NAME="webrtc-terminal"
 PREPARE_SCRIPT="$REPO_DIR/scripts/prepare_runtime.sh"
 
+file_has_server_name() {
+  local file="$1"
+  if [[ ! -f "$file" ]]; then
+    return 1
+  fi
+  if command -v rg >/dev/null 2>&1; then
+    rg -q "\"$SERVER_NAME\"" "$file"
+    return $?
+  fi
+  grep -q "\"$SERVER_NAME\"" "$file"
+}
+
 if ! command -v claude >/dev/null 2>&1; then
   echo "Error: 'claude' CLI is not installed or not in PATH."
   exit 1
@@ -43,7 +55,7 @@ echo "Runtime dir: $RUNTIME_DIR"
 echo "Claude Code MCP server installed:"
 claude mcp get "$SERVER_NAME"
 
-if [[ "$SCOPE" == "user" && -f "$REPO_DIR/.mcp.json" ]] && rg -q "\"$SERVER_NAME\"" "$REPO_DIR/.mcp.json"; then
+if [[ "$SCOPE" == "user" ]] && file_has_server_name "$REPO_DIR/.mcp.json"; then
   echo "Note: project scope also has '$SERVER_NAME'. User scope may be shadowed in this repo."
   echo "If needed, remove project scope with: claude mcp remove \"$SERVER_NAME\" -s project"
 fi
