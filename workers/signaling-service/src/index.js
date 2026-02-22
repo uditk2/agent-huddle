@@ -1,5 +1,7 @@
 const DEFAULT_SESSION_TTL_SEC = 60 * 60;
 const DEFAULT_TURN_TTL_SEC = 10 * 60;
+const GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo";
+const GOOGLE_TOKEN_EXCHANGE_URL = "https://oauth2.googleapis.com/token";
 
 export class SignalingRoom {
   constructor(state, env) {
@@ -251,6 +253,117 @@ export default {
           accessToken: token,
           tokenType: "Bearer",
           expiresInSec: ttlSec,
+          user: {
+            id: username,
+            provider: "password",
+          },
+        }),
+        env,
+        request,
+      );
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/google") {
+      if (!env.SIGNALING_JWT_SECRET) {
+        return withCors(json({ error: "server-misconfigured", detail: "SIGNALING_JWT_SECRET missing" }, 500), env, request);
+      }
+
+      const clientId = String(env.GOOGLE_OAUTH_CLIENT_ID || "").trim();
+      if (!clientId) {
+        return withCors(json({ error: "server-misconfigured", detail: "GOOGLE_OAUTH_CLIENT_ID missing" }, 500), env, request);
+      }
+
+      const body = await readJsonBody(request);
+      const idTokenFromBody = typeof body.idToken === "string" ? body.idToken.trim() : "";
+
+      let idToken = idTokenFromBody;
+      if (!idToken) {
+        const code = typeof body.code === "string" ? body.code.trim() : "";
+        if (!code) {
+          return withCors(json({ error: "missing-google-id-token-or-code" }, 400), env, request);
+        }
+
+        const clientSecret = String(env.GOOGLE_OAUTH_CLIENT_SECRET || "").trim();
+        if (!clientSecret) {
+          return withCors(json({ error: "server-misconfigured", detail: "GOOGLE_OAUTH_CLIENT_SECRET missing" }, 500), env, request);
+        }
+
+        const redirectUri = typeof body.redirectUri === "string" && body.redirectUri.trim()
+          ? body.redirectUri.trim()
+          : String(env.GOOGLE_OAUTH_REDIRECT_URI || "").trim();
+        if (!redirectUri) {
+          return withCors(json({ error: "missing-redirect-uri", detail: "Provide body.redirectUri or GOOGLE_OAUTH_REDIRECT_URI" }, 400), env, request);
+        }
+
+        const exchange = await exchangeGoogleAuthCode({
+          code,
+          redirectUri,
+          clientId,
+          clientSecret,
+        });
+
+        if (!exchange.ok) {
+          return withCors(json({ error: "google-code-exchange-failed", detail: exchange.detail }, exchange.status), env, request);
+        }
+        idToken = exchange.idToken;
+      }
+
+      const verified = await verifyGoogleIdToken({
+        idToken,
+        expectedAud: clientId,
+      });
+      if (!verified.ok) {
+        return withCors(json({ error: "google-id-token-invalid", detail: verified.detail }, verified.status), env, request);
+      }
+
+      const profile = verified.profile;
+      const allowedDomains = parseCsvSet(env.GOOGLE_OAUTH_ALLOWED_DOMAINS || "");
+      if (allowedDomains.size > 0) {
+        const hostedDomain = String(profile.hd || "").trim().toLowerCase();
+        if (!hostedDomain || !allowedDomains.has(hostedDomain)) {
+          return withCors(
+            json(
+              {
+                error: "google-domain-not-allowed",
+                detail: "User hosted domain is not in GOOGLE_OAUTH_ALLOWED_DOMAINS",
+              },
+              403,
+            ),
+            env,
+            request,
+          );
+        }
+      }
+
+      const ttlSec = parsePositiveInt(env.SIGNALING_SESSION_TTL_SEC, DEFAULT_SESSION_TTL_SEC);
+      const sub = `google:${profile.sub}`;
+      const token = await signJwt(
+        {
+          sub,
+          scope: "user",
+          provider: "google",
+          email: profile.email || "",
+          name: profile.name || "",
+          picture: profile.picture || "",
+          hd: profile.hd || "",
+        },
+        ttlSec,
+        env.SIGNALING_JWT_SECRET,
+      );
+
+      return withCors(
+        json({
+          accessToken: token,
+          tokenType: "Bearer",
+          expiresInSec: ttlSec,
+          user: {
+            id: sub,
+            provider: "google",
+            email: profile.email || null,
+            name: profile.name || null,
+            picture: profile.picture || null,
+            hd: profile.hd || null,
+          },
         }),
         env,
         request,
@@ -267,6 +380,11 @@ export default {
           user: {
             id: auth.claims.sub,
             scope: auth.claims.scope,
+            provider: auth.claims.provider || "password",
+            email: auth.claims.email || null,
+            name: auth.claims.name || null,
+            picture: auth.claims.picture || null,
+            hd: auth.claims.hd || null,
           },
         }),
         env,
@@ -570,6 +688,146 @@ async function generateTurnCredentials(env, { ttlSec, customIdentifier }) {
   };
 }
 
+async function exchangeGoogleAuthCode({ code, redirectUri, clientId, clientSecret }) {
+  const payload = new URLSearchParams({
+    code,
+    client_id: clientId,
+    client_secret: clientSecret,
+    redirect_uri: redirectUri,
+    grant_type: "authorization_code",
+  });
+
+  let response;
+  try {
+    response = await fetch(GOOGLE_TOKEN_EXCHANGE_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: payload.toString(),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      detail: String(error?.message || error),
+    };
+  }
+
+  let body = {};
+  try {
+    body = await response.json();
+  } catch {
+    body = {};
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      detail: body,
+    };
+  }
+
+  const idToken = typeof body.id_token === "string" ? body.id_token.trim() : "";
+  if (!idToken) {
+    return {
+      ok: false,
+      status: 502,
+      detail: "Google token exchange response missing id_token",
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    idToken,
+  };
+}
+
+async function verifyGoogleIdToken({ idToken, expectedAud }) {
+  const tokenInfoUrl = new URL(GOOGLE_TOKENINFO_URL);
+  tokenInfoUrl.searchParams.set("id_token", idToken);
+
+  let response;
+  try {
+    response = await fetch(tokenInfoUrl.toString(), {
+      method: "GET",
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      detail: String(error?.message || error),
+    };
+  }
+
+  let body = {};
+  try {
+    body = await response.json();
+  } catch {
+    body = {};
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: 401,
+      detail: body,
+    };
+  }
+
+  const aud = String(body.aud || "");
+  if (!aud || aud !== expectedAud) {
+    return {
+      ok: false,
+      status: 401,
+      detail: "google-aud-mismatch",
+    };
+  }
+
+  const sub = String(body.sub || "").trim();
+  if (!sub) {
+    return {
+      ok: false,
+      status: 401,
+      detail: "google-sub-missing",
+    };
+  }
+
+  const expSec = Number(body.exp);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(expSec) || expSec <= nowSec) {
+    return {
+      ok: false,
+      status: 401,
+      detail: "google-token-expired",
+    };
+  }
+
+  const email = String(body.email || "").trim().toLowerCase();
+  const emailVerified = body.email_verified === true || body.email_verified === "true";
+  if (email && !emailVerified) {
+    return {
+      ok: false,
+      status: 401,
+      detail: "google-email-not-verified",
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    profile: {
+      sub,
+      email,
+      name: String(body.name || "").trim(),
+      picture: String(body.picture || "").trim(),
+      hd: String(body.hd || "").trim().toLowerCase(),
+    },
+  };
+}
+
 function buildWsUrl(url, sessionId, token, peerId) {
   const wsScheme = url.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = new URL(`${wsScheme}//${url.host}/api/sessions/${sessionId}/ws`);
@@ -628,6 +886,15 @@ function parsePositiveInt(value, fallback) {
     return fallback;
   }
   return Math.floor(n);
+}
+
+function parseCsvSet(raw) {
+  return new Set(
+    String(raw || "")
+      .split(",")
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean),
+  );
 }
 
 function json(payload, status = 200) {

@@ -2,6 +2,7 @@
 
 This service provides:
 - User sign-in (`/api/auth/login`)
+- Google sign-in (`/api/auth/google`)
 - WebRTC signaling rooms over WebSocket (Durable Object)
 - Cloudflare TURN credential minting (`/api/turn/credentials`)
 
@@ -23,12 +24,20 @@ npx wrangler secret put SIGNALING_JWT_SECRET
 npx wrangler secret put SIGNALING_USERS_JSON
 npx wrangler secret put CLOUDFLARE_TURN_API_TOKEN
 npx wrangler secret put CLOUDFLARE_TURN_KEY_ID
+npx wrangler secret put GOOGLE_OAUTH_CLIENT_ID
+npx wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
 ```
 
 - `SIGNALING_JWT_SECRET`: random long string used to sign JWTs.
 - `SIGNALING_USERS_JSON`: JSON user map, e.g. `{"alice":"strong-password","bob":"another"}`.
 - `CLOUDFLARE_TURN_API_TOKEN`: Cloudflare API token with TURN credentials generation permission.
 - `CLOUDFLARE_TURN_KEY_ID`: TURN key ID from Cloudflare Realtime TURN settings.
+- `GOOGLE_OAUTH_CLIENT_ID`: Google OAuth web client id.
+- `GOOGLE_OAUTH_CLIENT_SECRET`: Google OAuth web client secret (used when exchanging auth code).
+
+Optional:
+- `GOOGLE_OAUTH_REDIRECT_URI`: default redirect URI used by auth-code exchange when `redirectUri` not sent in request.
+- `GOOGLE_OAUTH_ALLOWED_DOMAINS`: comma-separated hosted domains (`hd`) allowed for Google sign-ins.
 
 3. Deploy:
 
@@ -60,6 +69,31 @@ Content-Type: application/json
 ```
 
 Returns bearer token.
+
+### Google login (ID token)
+
+```http
+POST /api/auth/google
+Content-Type: application/json
+
+{ "idToken": "<google-id-token>" }
+```
+
+### Google login (Auth code exchange)
+
+```http
+POST /api/auth/google
+Content-Type: application/json
+
+{
+  "code": "<google-auth-code>",
+  "redirectUri": "https://your-app.example.com/auth/google/callback"
+}
+```
+
+Notes:
+- If `idToken` is provided, `code` is not required.
+- If using `code`, backend exchanges it with Google and validates returned ID token.
 
 ### Current user
 
