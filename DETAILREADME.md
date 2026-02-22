@@ -34,6 +34,11 @@ Claude Code:
 ./scripts/install_claude_code.sh user
 ```
 
+VS Code (workspace MCP config):
+```bash
+./scripts/generate_vscode_mcp.sh
+```
+
 After install, use MCP tools directly. You usually do not need `npm start`.
 
 ## Standalone Run (optional)
@@ -183,6 +188,24 @@ Optional custom runtime dir:
 ```bash
 ./scripts/install_claude_code.sh user /custom/runtime/dir
 ```
+
+## VS Code config generation
+
+Generate or update workspace config at `.vscode/mcp.json`:
+
+```bash
+./scripts/generate_vscode_mcp.sh
+```
+
+Optional args:
+
+```bash
+./scripts/generate_vscode_mcp.sh /path/to/workspace/.vscode/mcp.json
+./scripts/generate_vscode_mcp.sh /path/to/workspace/.vscode/mcp.json /custom/runtime/dir
+```
+
+The script preserves existing servers and updates `servers.webrtc-terminal` using the isolated runtime launcher.
+It also prints an optional VS Code CLI command (`code --add-mcp ...`) for user-profile installation.
 
 ## Dependency Isolation
 

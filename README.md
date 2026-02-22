@@ -15,8 +15,14 @@ Claude Code:
 ./scripts/install_claude_code.sh user
 ```
 
+VS Code (workspace MCP config):
+```bash
+./scripts/generate_vscode_mcp.sh
+```
+
 Notes:
 - Install scripts set up isolated runtime and run `npm install` there.
+- VS Code generator writes/updates `.vscode/mcp.json` with `servers.webrtc-terminal`.
 - Use through Codex/Claude as MCP tools. `npm start` is optional for standalone local testing.
 
 ## Default Flow (Machine A / Machine B)
