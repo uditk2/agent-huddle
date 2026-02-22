@@ -69,3 +69,13 @@ npm run connect:b -- --blob 'OFFER_BLOB=...'
 - `server_status`
 
 For full/advanced tool list, see `DETAILREADME.md`.
+
+## Cloudflare Signaling Service
+
+For signed-user signaling + TURN credential issuance via Cloudflare Worker:
+
+```bash
+cd workers/signaling-service
+```
+
+See `workers/signaling-service/README.md` for deploy and API usage.

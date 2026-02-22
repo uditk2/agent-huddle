@@ -248,3 +248,10 @@ claude mcp get webrtc-terminal
 4. Issue key with admin token `localtest`
 5. Connect using generated pass key
 6. Run terminal commands through the client
+
+## Managed signaling + TURN
+
+If you want signed-user signaling and TURN credentials from one hosted backend, use:
+
+- `workers/signaling-service/` (Cloudflare Worker + Durable Object)
+- Docs: `workers/signaling-service/README.md`

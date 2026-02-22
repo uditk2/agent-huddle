@@ -5,3 +5,4 @@ npm-debug.log*
 .mcp.json
 .webrtc-terminal-mcp.log
 .onboarding-state.json
+.wrangler/

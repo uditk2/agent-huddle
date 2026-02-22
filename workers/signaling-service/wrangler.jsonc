@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-huddle-signaling",
+  "main": "src/index.js",
+  "compatibility_date": "2026-02-22",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SIGNALING_ROOM",
+        "class_name": "SignalingRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SignalingRoom"]
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "*",
+    "SIGNALING_SESSION_TTL_SEC": "3600",
+    "TURN_DEFAULT_TTL_SEC": "600",
+    "TURN_AUTO_ON_SESSION": "true"
+  }
+}
