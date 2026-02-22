@@ -79,3 +79,10 @@ cd workers/signaling-service
 ```
 
 See `workers/signaling-service/README.md` for deploy and API usage.
+
+## Local Service Watcher Agent
+
+For machine-local service monitoring that auto-opens deduped GitHub issues every 5 minutes:
+
+- Docs: `ops/README_issue_watcher.md`
+- Install cron watcher: `ops/install_issue_watcher_cron.sh`

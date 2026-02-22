@@ -1,4 +1,5 @@
 node_modules/
+__pycache__/
 .env
 npm-debug.log*
 .DS_Store
@@ -6,3 +7,6 @@ npm-debug.log*
 .webrtc-terminal-mcp.log
 .onboarding-state.json
 .wrangler/
+ops/logs/
+ops/.issue_watcher_state.json
+ops/issue_watcher.env

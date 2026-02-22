@@ -255,3 +255,11 @@ If you want signed-user signaling and TURN credentials from one hosted backend, 
 
 - `workers/signaling-service/` (Cloudflare Worker + Durable Object)
 - Docs: `workers/signaling-service/README.md`
+
+## Local Service Watcher Agent
+
+If you want this machine to monitor service logs and automatically file deduped GitHub issues:
+
+- Guide: `ops/README_issue_watcher.md`
+- Runner: `ops/run_issue_watcher.sh`
+- 5-minute scheduler install: `ops/install_issue_watcher_cron.sh`
