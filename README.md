@@ -64,6 +64,7 @@ npm run connect:b -- --blob 'OFFER_BLOB=...'
 
 ## MCP Tools (Default)
 
+- `onboarding` (recommended first call)
 - `connect`
 - `server_status`
 

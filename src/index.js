@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import cors from "cors";
 import express from "express";
@@ -22,6 +25,10 @@ const ADMIN_TOKEN = process.env.WEBRTC_MCP_ADMIN_TOKEN || "";
 const SHELL_CMD = process.env.WEBRTC_MCP_SHELL || process.env.SHELL || "/bin/bash";
 const SHELL_ARGS = parseArgs(process.env.WEBRTC_MCP_SHELL_ARGS || "-li");
 const SHELL_CWD = process.env.WEBRTC_MCP_WORKDIR || process.cwd();
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_DIR = path.resolve(MODULE_DIR, "..");
+const ONBOARDING_STATE_FILE =
+  process.env.WEBRTC_MCP_ONBOARDING_FILE || path.join(RUNTIME_DIR, ".onboarding-state.json");
 
 const ICE_SERVERS = parseIceServers(
   process.env.WEBRTC_MCP_ICE_SERVERS ||
@@ -38,6 +45,7 @@ const sessions = new Map();
 const passIndex = new Map();
 let activePassSessionId = null;
 let activePassKey = null;
+let onboardingState = loadOnboardingState();
 
 const issueSchema = z.object({
   label: z.string().trim().max(120).optional(),
@@ -154,6 +162,66 @@ function generatePassKey() {
 
 function nowIso(ms = Date.now()) {
   return new Date(ms).toISOString();
+}
+
+function defaultOnboardingState() {
+  return {
+    version: 1,
+    firstSeenAt: nowIso(),
+    lastShownAt: null,
+    completedAt: null,
+    completedReason: null,
+    completions: 0,
+  };
+}
+
+function loadOnboardingState() {
+  try {
+    const raw = fs.readFileSync(ONBOARDING_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return defaultOnboardingState();
+    }
+    const fallback = defaultOnboardingState();
+    return {
+      ...fallback,
+      ...parsed,
+    };
+  } catch {
+    return defaultOnboardingState();
+  }
+}
+
+function saveOnboardingState() {
+  try {
+    fs.mkdirSync(path.dirname(ONBOARDING_STATE_FILE), { recursive: true });
+    fs.writeFileSync(ONBOARDING_STATE_FILE, `${JSON.stringify(onboardingState, null, 2)}\n`, "utf8");
+  } catch (error) {
+    log(`failed to persist onboarding state (${ONBOARDING_STATE_FILE}): ${formatError(error)}`);
+  }
+}
+
+function markOnboardingShown() {
+  onboardingState.lastShownAt = nowIso();
+  saveOnboardingState();
+}
+
+function markOnboardingCompleted(reason = "connected") {
+  onboardingState.completedAt = nowIso();
+  onboardingState.completedReason = reason;
+  onboardingState.completions = Number(onboardingState.completions || 0) + 1;
+  saveOnboardingState();
+}
+
+function onboardingSummary() {
+  return {
+    firstRun: !onboardingState.completedAt,
+    firstSeenAt: onboardingState.firstSeenAt,
+    lastShownAt: onboardingState.lastShownAt,
+    completedAt: onboardingState.completedAt,
+    completedReason: onboardingState.completedReason,
+    completions: Number(onboardingState.completions || 0),
+  };
 }
 
 function compactSession(session) {
@@ -403,6 +471,7 @@ function attachDataChannel(session, channel) {
   channel.onopen = () => {
     session.status = "connected";
     session.connectedAt = Date.now();
+    markOnboardingCompleted("datachannel-open");
     startTerminal(session).catch((error) => {
       sendChannel(session, {
         type: "error",
@@ -834,6 +903,19 @@ function activePassPayload() {
   };
 }
 
+function shellSingleQuote(value) {
+  const safe = String(value ?? "").replace(/'/g, "'\"'\"'");
+  return `'${safe}'`;
+}
+
+function buildMachineAStep(passKey, connectEndpoint) {
+  const parts = ["npm", "run", "connect:a", "--", "--pass-key", shellSingleQuote(passKey)];
+  if (connectEndpoint) {
+    parts.push("--connect-url", shellSingleQuote(connectEndpoint));
+  }
+  return parts.join(" ");
+}
+
 function buildMcpServer() {
   const mcp = new McpServer({
     name: "webrtc-terminal-mcp",
@@ -881,6 +963,125 @@ function buildMcpServer() {
   );
 
   mcp.tool(
+    "onboarding",
+    "First-run onboarding wizard for Codex, Claude Code, and VS Code MCP chat clients.",
+    {
+      role: z.enum(["machine_a", "machine_b"]).optional(),
+      passKey: z.string().trim().min(4).max(128).optional(),
+      connectEndpoint: z.string().trim().url().optional(),
+      offerBlob: z.string().min(16).optional(),
+      rotate: z.boolean().optional(),
+      label: z.string().trim().max(120).optional(),
+    },
+    async ({ role, passKey, connectEndpoint, offerBlob, rotate, label }) => {
+      markOnboardingShown();
+      const state = onboardingSummary();
+
+      const getActive = () => {
+        if (!rotate) return activePassPayload();
+        const issued = rotateActivePassKey({ source: "onboarding-rotate", label: "active-pass" });
+        return {
+          sessionId: issued.session.sessionId,
+          passKey: issued.passKey,
+          issuedAt: nowIso(issued.session.issuedAt),
+          expiresAt: nowIso(issued.session.expiresAt),
+          connectEndpoint: getConnectUrl(),
+          reused: false,
+          rotated: true,
+        };
+      };
+
+      if (!role) {
+        const active = getActive();
+        return asToolText({
+          onboarding: state,
+          message: state.firstRun
+            ? "First run detected. Start with role=machine_b unless you were given a pass key by another machine."
+            : "Onboarding wizard. Choose role and follow the returned steps.",
+          chooseOne: [
+            {
+              role: "machine_b",
+              when: "This machine hosts the MCP server terminal",
+              nextToolCall: { tool: "onboarding", args: { role: "machine_b" } },
+            },
+            {
+              role: "machine_a",
+              when: "This machine is connecting to another host",
+              nextToolCall: {
+                tool: "onboarding",
+                args: {
+                  role: "machine_a",
+                  passKey: "<from machine_b>",
+                  connectEndpoint: "<from machine_b>",
+                },
+              },
+            },
+          ],
+          machineBPreview: {
+            passKey: active.passKey,
+            connectEndpoint: active.connectEndpoint,
+            machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
+          },
+          note:
+            "Portable slash commands are not supported uniformly across clients; use this onboarding tool as the common entry command.",
+        });
+      }
+
+      if (role === "machine_b") {
+        if (offerBlob) {
+          const answered = await answerOfferBlobInternal({ offerBlob, label });
+          if (!answered.error) {
+            markOnboardingCompleted("answered-offer-blob");
+          }
+          return asToolText({
+            onboarding: onboardingSummary(),
+            role: "machine_b",
+            ...answered,
+            next: answered.error
+              ? "If this keeps failing, rotate pass key and restart onboarding with role=machine_b."
+              : "Copy answerBlobLine and paste it into the waiting Machine A prompt.",
+          });
+        }
+
+        const active = getActive();
+        return asToolText({
+          onboarding: state,
+          role: "machine_b",
+          passKey: active.passKey,
+          connectEndpoint: active.connectEndpoint,
+          machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
+          machineBNextToolCall: {
+            tool: "onboarding",
+            args: { role: "machine_b", offerBlob: "OFFER_BLOB=..." },
+          },
+          next: "Run machineAStep on Machine A. Then call onboarding again with role=machine_b and offerBlob.",
+        });
+      }
+
+      if (!passKey || !connectEndpoint) {
+        return asToolText({
+          onboarding: state,
+          role: "machine_a",
+          error: "missing-passkey-or-endpoint",
+          help: "Get these from Machine B by calling onboarding with role=machine_b.",
+          expectedArgs: {
+            role: "machine_a",
+            passKey: "<from machine_b>",
+            connectEndpoint: "<from machine_b>",
+          },
+        });
+      }
+
+      return asToolText({
+        onboarding: state,
+        role: "machine_a",
+        machineAStep: buildMachineAStep(passKey, connectEndpoint),
+        next: "Run machineAStep. It prints OFFER_BLOB. Send that to Machine B and continue there with onboarding(role=machine_b, offerBlob=...).",
+      });
+    },
+  );
+
+  mcp.tool(
     "list_sessions",
     "List passkey sessions and connection state.",
     {
@@ -920,6 +1121,7 @@ function buildMcpServer() {
     {},
     async () => {
       const active = activePassPayload();
+      const state = onboardingSummary();
       return asToolText({
         httpHost: HTTP_HOST,
         httpPort: runtimeHttpPort,
@@ -945,6 +1147,10 @@ function buildMcpServer() {
           sessionId: active.sessionId,
           expiresAt: active.expiresAt,
         },
+        onboarding: {
+          ...state,
+          recommendedTool: state.firstRun ? "onboarding" : "connect",
+        },
       });
     },
   );
@@ -960,8 +1166,12 @@ function buildMcpServer() {
       label: z.string().trim().max(120).optional(),
     },
     async ({ role, passKey, connectEndpoint, offerBlob, label }) => {
+      markOnboardingShown();
+      const state = onboardingSummary();
       if (!role) {
         return asToolText({
+          onboarding: state,
+          recommendedEntryTool: "onboarding",
           chooseOne: [
             {
               role: "machine_a",
@@ -996,10 +1206,11 @@ function buildMcpServer() {
 
         const active = activePassPayload();
         return asToolText({
+          onboarding: state,
           role: "machine_b",
           passKey: active.passKey,
           connectEndpoint: active.connectEndpoint,
-          machineAStep: `npm run connect:a -- --pass-key '${active.passKey}'`,
+          machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
           machineANextToolCall: {
             tool: "connect",
             args: {
@@ -1021,6 +1232,7 @@ function buildMcpServer() {
 
       if (!passKey || !connectEndpoint) {
         return asToolText({
+          onboarding: state,
           role: "machine_a",
           error: "missing-passkey-or-endpoint",
           help: "On Machine B call connect with role=machine_b first, then copy passKey and connectEndpoint (or machineAStep) here.",
@@ -1033,8 +1245,9 @@ function buildMcpServer() {
       }
 
       return asToolText({
+        onboarding: state,
         role: "machine_a",
-        machineAStep: `npm run connect:a -- --pass-key '${passKey}'`,
+        machineAStep: buildMachineAStep(passKey, connectEndpoint),
         next: "Run machineAStep in terminal on Machine A. It will print OFFER_BLOB line. Send that line to Machine B and call connect there with role=machine_b and offerBlob. No direct A->B API call is required in this default copy/paste path.",
       });
     },
@@ -1047,11 +1260,12 @@ function buildMcpServer() {
     async () => {
       const active = activePassPayload();
       return asToolText({
+        onboarding: onboardingSummary(),
         passKey: active.passKey,
         connectEndpoint: active.connectEndpoint,
         roleA: "Machine A (offerer)",
         roleB: "Machine B (answerer)",
-        machineAStep: `npm run connect:a -- --pass-key '${active.passKey}'`,
+        machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
         machineBStep:
           "After receiving OFFER_BLOB line from machine A, call tool answer_offer_blob with offerBlob and paste returned answerBlobLine back on machine A.",
         machineBFallbackStep: "npm run connect:b -- --blob 'OFFER_BLOB=...'",
@@ -1071,7 +1285,11 @@ function buildMcpServer() {
       label: z.string().trim().max(120).optional(),
     },
     async ({ offerBlob, label }) => {
+      markOnboardingShown();
       const answered = await answerOfferBlobInternal({ offerBlob, label });
+      if (!answered.error) {
+        markOnboardingCompleted("answered-offer-blob");
+      }
       return asToolText(answered);
     },
   );

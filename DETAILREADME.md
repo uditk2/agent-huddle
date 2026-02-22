@@ -126,6 +126,7 @@ WEBRTC_MCP_ICE_SERVERS='[
 
 ## MCP tools
 
+- `onboarding` (first-run wizard across Codex/Claude/VS Code)
 - `issue_pass_key`
 - `get_latest_pass_key`
 - `manual_connect_guide`
@@ -136,10 +137,15 @@ WEBRTC_MCP_ICE_SERVERS='[
 
 Typical usage from Claude/Codex:
 
+- First run: `Call webrtc-terminal MCP tool onboarding`
 - Ask: `Call webrtc-terminal MCP tool get_latest_pass_key`
 - Optional rotate: `Call webrtc-terminal MCP tool get_latest_pass_key with rotate=true`
 - Guided connect: `Call webrtc-terminal MCP tool manual_connect_guide`
 - Offer answering on machine B: `Call webrtc-terminal MCP tool answer_offer_blob` (paste full `OFFER_BLOB=...` line)
+
+Notes:
+- Cross-client portable slash commands are not standardized across Codex/Claude/VS Code.
+- Use `onboarding` as the common one-command entrypoint instead.
 
 ## Codex install
 
