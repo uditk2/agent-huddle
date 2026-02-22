@@ -22,48 +22,34 @@ VS Code (workspace MCP config):
 
 Notes:
 - Install scripts set up isolated runtime and run `npm install` there.
+- Install scripts run hosted-signaling bootstrap by default.
 - VS Code generator writes/updates `.vscode/mcp.json` with `servers.webrtc-terminal`.
 - Use through Codex/Claude as MCP tools. `npm start` is optional for standalone local testing.
 
-## Default Flow (Machine A / Machine B)
+## User Steps (Hosted Pair)
 
-1. Pick roles:
-- Machine A = offerer
-- Machine B = answerer
+1. Install MCP server on both machines (`install_codex.sh` or `install_claude_code.sh user`).
+2. Login at `https://agenthuddle.synergiqai.com/login`.
+3. Copy the one-time code shown on the site.
+4. In Codex/Claude on machine 1, call MCP tool `pair_with_code` with `passKey='<CODE>'`.
+5. In Codex/Claude on machine 2, call MCP tool `pair_with_code` with the same `passKey`.
+6. Verify with MCP tool `pair_status` on either machine.
 
-2. On either machine, call MCP tool:
-- `connect`
-- It shows two choices: `machine_a` or `machine_b`.
-
-3. On machine B, call:
-- `connect` with `role=machine_b`
-- Copy returned `machineAStep` and run it on machine A.
-
-4. Machine A prints one line:
-- `OFFER_BLOB=...`
-
-5. On machine B, call:
-- `connect` with `role=machine_b` and `offerBlob='OFFER_BLOB=...'`
-
-6. Copy `answerBlobLine` from machine B back into machine A prompt:
-- `ANSWER_BLOB=...`
-
-7. Session connects and stays active with keepalive.
-
-## A/B CLI Commands
-
-Machine A:
+CLI fallback:
 ```bash
-npm run connect:a -- --pass-key '<PASSKEY>'
+npm run pair -- --pass-key '<CODE>'
 ```
 
-Machine B (fallback if not using MCP `connect`):
-```bash
-npm run connect:b -- --blob 'OFFER_BLOB=...'
-```
+## Default MCP Tool Flow (Fallback)
+
+Use tool `onboarding` first, then `connect`.
+This is copy/paste offer/answer flow and does not require hosted signaling.
 
 ## MCP Tools (Default)
 
+- `pair_with_code` (recommended hosted flow)
+- `pair_status`
+- `pair_stop`
 - `onboarding` (recommended first call)
 - `connect`
 - `server_status`
@@ -79,6 +65,14 @@ cd workers/signaling-service
 ```
 
 See `workers/signaling-service/README.md` for deploy and API usage.
+
+## Environment Overrides
+
+- `WEBRTC_MCP_AUTH_PROVIDER=google|github|token`
+- `WEBRTC_MCP_SIGNALING_BASE_URL=https://agenthuddle.synergiqai.com`
+- `WEBRTC_MCP_SIGNALING_TOKEN=<token>` (required for `token` provider)
+- `WEBRTC_MCP_PAIR_KEY=<optional-fixed-passkey>`
+- `WEBRTC_MCP_SKIP_BOOTSTRAP=1` (skip bootstrap in install scripts)
 
 ## Local Service Watcher Agent
 

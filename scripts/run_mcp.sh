@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_FILE="${WEBRTC_MCP_LOG_FILE:-$REPO_DIR/.webrtc-terminal-mcp.log}"
 NODE_BIN="${WEBRTC_MCP_NODE_BIN:-}"
+ENV_FILE="${WEBRTC_MCP_ENV_FILE:-$REPO_DIR/.webrtc-terminal.env}"
 
 log_line() {
   local line="$1"
@@ -22,6 +23,13 @@ prepare_log_file() {
 }
 
 prepare_log_file
+
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a
+  source "$ENV_FILE"
+  set +a
+fi
 
 if [[ -z "$NODE_BIN" ]]; then
   if command -v node >/dev/null 2>&1; then

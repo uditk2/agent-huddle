@@ -3,8 +3,10 @@
 This service provides:
 - User sign-in (`/api/auth/login`)
 - Google sign-in (`/api/auth/google`)
+- GitHub token sign-in (`/api/auth/github`)
 - WebRTC signaling rooms over WebSocket (Durable Object)
 - Cloudflare TURN credential minting (`/api/turn/credentials`)
+- Passkey-based rendezvous session creation (`/api/rendezvous`)
 
 It is designed so only this backend holds Cloudflare API secrets. Clients receive short-lived TURN credentials.
 
@@ -59,6 +61,14 @@ npm run dev
 GET /health
 ```
 
+### Browser login helper
+
+```http
+GET /login
+```
+
+This page performs Google sign-in and displays a one-time pairing code for two-machine setup.
+
 ### Login
 
 ```http
@@ -102,6 +112,25 @@ GET /api/auth/me
 Authorization: Bearer <token>
 ```
 
+### Issue one-time pairing code
+
+```http
+POST /api/pair-key/issue
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "ttlSec": 600 }
+```
+
+### GitHub login (access token exchange)
+
+```http
+POST /api/auth/github
+Content-Type: application/json
+
+{ "githubAccessToken": "<gh-oauth-token>" }
+```
+
 ### Mint TURN credentials
 
 ```http
@@ -127,6 +156,23 @@ Returns:
 - `joinToken`
 - `wsUrl` (already contains `token` + `peerId` query params)
 - `turn` (short-lived `iceServers`, if configured)
+
+### Rendezvous by pass key (deterministic session id)
+
+```http
+POST /api/rendezvous
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "passKey": "ABCD-EFGH-IJKL", "peerId": "machine-a" }
+```
+
+Returns:
+- `sessionId` (derived from pass key hash)
+- `peerId`
+- `joinToken`
+- `wsUrl`
+- `turn` (if configured)
 
 ### Join existing signaling session
 

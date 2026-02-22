@@ -2,6 +2,8 @@ const DEFAULT_SESSION_TTL_SEC = 60 * 60;
 const DEFAULT_TURN_TTL_SEC = 10 * 60;
 const GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo";
 const GOOGLE_TOKEN_EXCHANGE_URL = "https://oauth2.googleapis.com/token";
+const GITHUB_USER_API_URL = "https://api.github.com/user";
+const GITHUB_USER_EMAILS_API_URL = "https://api.github.com/user/emails";
 const GITHUB_REPO_URL = "https://github.com/uditk2/agent-huddle";
 
 export class SignalingRoom {
@@ -215,6 +217,11 @@ export default {
       return html(renderHomepage(url.origin));
     }
 
+    if (request.method === "GET" && url.pathname === "/login") {
+      const clientId = String(env.GOOGLE_OAUTH_CLIENT_ID || "").trim();
+      return html(renderLoginPage(url.origin, clientId));
+    }
+
     if (request.method === "GET" && url.pathname === "/health") {
       return withCors(
         json({
@@ -375,6 +382,58 @@ export default {
       );
     }
 
+    if (request.method === "POST" && url.pathname === "/api/auth/github") {
+      if (!env.SIGNALING_JWT_SECRET) {
+        return withCors(json({ error: "server-misconfigured", detail: "SIGNALING_JWT_SECRET missing" }, 500), env, request);
+      }
+
+      const body = await readJsonBody(request);
+      const githubAccessToken = typeof body.githubAccessToken === "string" ? body.githubAccessToken.trim() : "";
+      if (!githubAccessToken) {
+        return withCors(json({ error: "missing-github-access-token" }, 400), env, request);
+      }
+
+      const verified = await verifyGithubAccessToken(githubAccessToken);
+      if (!verified.ok) {
+        return withCors(json({ error: "github-token-invalid", detail: verified.detail }, verified.status), env, request);
+      }
+
+      const profile = verified.profile;
+      const ttlSec = parsePositiveInt(env.SIGNALING_SESSION_TTL_SEC, DEFAULT_SESSION_TTL_SEC);
+      const sub = `github:${profile.id}`;
+      const token = await signJwt(
+        {
+          sub,
+          scope: "user",
+          provider: "github",
+          username: profile.login || "",
+          email: profile.email || "",
+          name: profile.name || "",
+          picture: profile.avatarUrl || "",
+        },
+        ttlSec,
+        env.SIGNALING_JWT_SECRET,
+      );
+
+      return withCors(
+        json({
+          accessToken: token,
+          tokenType: "Bearer",
+          expiresInSec: ttlSec,
+          user: {
+            id: sub,
+            provider: "github",
+            username: profile.login || null,
+            email: profile.email || null,
+            name: profile.name || null,
+            picture: profile.avatarUrl || null,
+          },
+        }),
+        env,
+        request,
+      );
+    }
+
     if (request.method === "GET" && url.pathname === "/api/auth/me") {
       const auth = await requireUser(request, env);
       if (auth.errorResponse) {
@@ -391,6 +450,30 @@ export default {
             picture: auth.claims.picture || null,
             hd: auth.claims.hd || null,
           },
+        }),
+        env,
+        request,
+      );
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/pair-key/issue") {
+      const auth = await requireUser(request, env);
+      if (auth.errorResponse) {
+        return withCors(auth.errorResponse, env, request);
+      }
+
+      const body = await readJsonBody(request);
+      const ttlSec = parsePositiveInt(body.ttlSec, parsePositiveInt(env.TURN_DEFAULT_TTL_SEC, DEFAULT_TURN_TTL_SEC));
+      const pairKey = generatePairKey();
+      const nowMs = Date.now();
+      const expiresAt = new Date(nowMs + ttlSec * 1000).toISOString();
+
+      return withCors(
+        json({
+          pairKey,
+          expiresInSec: ttlSec,
+          expiresAt,
+          note: "Use this one-time code on both machines to auto-match in hosted pairing.",
         }),
         env,
         request,
@@ -419,6 +502,68 @@ export default {
       }
 
       return withCors(json(turn), env, request);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/rendezvous") {
+      const auth = await requireUser(request, env);
+      if (auth.errorResponse) {
+        return withCors(auth.errorResponse, env, request);
+      }
+
+      const body = await readJsonBody(request);
+      const rawPassKey = typeof body.passKey === "string" ? body.passKey.trim() : "";
+      if (!rawPassKey) {
+        return withCors(json({ error: "missing-pass-key" }, 400), env, request);
+      }
+
+      const normalizedPassKey = normalizePassKey(rawPassKey);
+      if (normalizedPassKey.length < 6) {
+        return withCors(json({ error: "pass-key-too-short" }, 400), env, request);
+      }
+
+      const sessionId = await deriveRendezvousSessionId(normalizedPassKey);
+      const safeSubject = toPeerSlug(auth.claims.sub);
+      const peerId = sanitizePeerId(body.peerId) || `${safeSubject}-${makeShortId()}`;
+      const joinTtlSec = parsePositiveInt(body.joinTtlSec, parsePositiveInt(env.SIGNALING_SESSION_TTL_SEC, DEFAULT_SESSION_TTL_SEC));
+
+      const joinToken = await signJwt(
+        {
+          sub: auth.claims.sub,
+          scope: "ws",
+          sid: sessionId,
+          pid: peerId,
+        },
+        joinTtlSec,
+        env.SIGNALING_JWT_SECRET,
+      );
+
+      const wsUrl = buildWsUrl(url, sessionId, joinToken, peerId);
+      const autoTurn = (env.TURN_AUTO_ON_SESSION || "true").toLowerCase() !== "false";
+
+      let turn = null;
+      if (autoTurn) {
+        const turnTtlSec = parsePositiveInt(body.turnTtlSec, parsePositiveInt(env.TURN_DEFAULT_TTL_SEC, DEFAULT_TURN_TTL_SEC));
+        const result = await generateTurnCredentials(env, {
+          ttlSec: turnTtlSec,
+          customIdentifier: buildTurnIdentifier(auth.claims.sub, sessionId),
+        });
+        if (!result.error) {
+          turn = result;
+        }
+      }
+
+      return withCors(
+        json({
+          sessionId,
+          peerId,
+          joinToken,
+          joinExpiresInSec: joinTtlSec,
+          wsUrl,
+          turn,
+        }),
+        env,
+        request,
+      );
     }
 
     if (request.method === "POST" && url.pathname === "/api/sessions") {
@@ -451,7 +596,7 @@ export default {
         const turnTtlSec = parsePositiveInt(body.turnTtlSec, parsePositiveInt(env.TURN_DEFAULT_TTL_SEC, DEFAULT_TURN_TTL_SEC));
         const result = await generateTurnCredentials(env, {
           ttlSec: turnTtlSec,
-          customIdentifier: `${auth.claims.sub}:${sessionId}`,
+          customIdentifier: buildTurnIdentifier(auth.claims.sub, sessionId),
         });
         if (!result.error) {
           turn = result;
@@ -693,6 +838,92 @@ async function generateTurnCredentials(env, { ttlSec, customIdentifier }) {
   };
 }
 
+async function verifyGithubAccessToken(githubAccessToken) {
+  const headers = {
+    Authorization: `Bearer ${githubAccessToken}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "agent-huddle-signaling",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+
+  let profileResponse;
+  try {
+    profileResponse = await fetch(GITHUB_USER_API_URL, {
+      method: "GET",
+      headers,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      detail: String(error?.message || error),
+    };
+  }
+
+  let profileBody = {};
+  try {
+    profileBody = await profileResponse.json();
+  } catch {
+    profileBody = {};
+  }
+
+  if (!profileResponse.ok) {
+    return {
+      ok: false,
+      status: 401,
+      detail: profileBody,
+    };
+  }
+
+  const id = profileBody?.id;
+  const login = typeof profileBody?.login === "string" ? profileBody.login : "";
+  const name = typeof profileBody?.name === "string" ? profileBody.name : "";
+  const avatarUrl = typeof profileBody?.avatar_url === "string" ? profileBody.avatar_url : "";
+  let email = typeof profileBody?.email === "string" ? profileBody.email.trim().toLowerCase() : "";
+
+  if (!id || !login) {
+    return {
+      ok: false,
+      status: 401,
+      detail: "github-profile-missing-id-or-login",
+    };
+  }
+
+  if (!email) {
+    try {
+      const emailResp = await fetch(GITHUB_USER_EMAILS_API_URL, {
+        method: "GET",
+        headers,
+      });
+      if (emailResp.ok) {
+        const emailBody = await emailResp.json().catch(() => []);
+        if (Array.isArray(emailBody)) {
+          const preferred =
+            emailBody.find((item) => item?.primary && item?.verified && typeof item?.email === "string") ||
+            emailBody.find((item) => item?.verified && typeof item?.email === "string");
+          if (preferred?.email) {
+            email = String(preferred.email).trim().toLowerCase();
+          }
+        }
+      }
+    } catch {
+      // Ignore email enrichment failures.
+    }
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    profile: {
+      id: String(id),
+      login,
+      name,
+      email,
+      avatarUrl,
+    },
+  };
+}
+
 async function exchangeGoogleAuthCode({ code, redirectUri, clientId, clientSecret }) {
   const payload = new URLSearchParams({
     code,
@@ -748,6 +979,52 @@ async function exchangeGoogleAuthCode({ code, redirectUri, clientId, clientSecre
     status: 200,
     idToken,
   };
+}
+
+function normalizePassKey(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function toPeerSlug(value) {
+  const slug = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
+  if (!slug) {
+    return "peer";
+  }
+  return slug.slice(0, 24);
+}
+
+function buildTurnIdentifier(subject, sessionId) {
+  const left = toPeerSlug(subject || "user");
+  const right = String(sessionId || "")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(-20);
+  const joined = right ? `${left}-${right}` : left;
+  return joined.slice(0, 48);
+}
+
+async function sha256Hex(value) {
+  const data = new TextEncoder().encode(String(value || ""));
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+async function deriveRendezvousSessionId(normalizedPassKey) {
+  const hex = await sha256Hex(`agent-huddle:${normalizedPassKey}`);
+  return `pk-${hex.slice(0, 40)}`;
+}
+
+function generatePairKey() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let raw = "";
+  for (let i = 0; i < 12; i += 1) {
+    const idx = Math.floor(Math.random() * alphabet.length);
+    raw += alphabet[idx];
+  }
+  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}`;
 }
 
 async function verifyGoogleIdToken({ idToken, expectedAud }) {
@@ -891,6 +1168,7 @@ function renderHomepage(origin) {
   const authGoogleUrl = `${origin}/api/auth/google`;
   const sessionUrl = `${origin}/api/sessions`;
   const turnUrl = `${origin}/api/turn/credentials`;
+  const loginUrl = `${origin}/login`;
 
   return `<!doctype html>
 <html lang="en">
@@ -1208,6 +1486,7 @@ function renderHomepage(origin) {
         <div class="cta">
           <a class="btn main" href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">View GitHub Repository</a>
           <a class="btn ghost" href="${healthUrl}" target="_blank" rel="noreferrer">Open Health Endpoint</a>
+          <a class="btn ghost" href="${loginUrl}" target="_blank" rel="noreferrer">Login (Google)</a>
         </div>
       </article>
 
@@ -1251,6 +1530,290 @@ function renderHomepage(origin) {
       Source: <a href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">github.com/uditk2/agent-huddle</a>
     </footer>
   </main>
+</body>
+</html>`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderLoginPage(origin, googleClientId) {
+  const escapedOrigin = escapeHtml(origin);
+  const clientIdJson = JSON.stringify(String(googleClientId || ""));
+  const missingClientId = !googleClientId;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Huddle Login</title>
+  <meta name="description" content="Google login to mint an Agent Huddle signaling access token." />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    :root {
+      --bg: #f4efe5;
+      --card: #fffaf2;
+      --ink: #243138;
+      --muted: #5a686d;
+      --line: #d8ccbc;
+      --accent: #2f7f77;
+      --warn: #ab4e3c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "Plus Jakarta Sans", "Avenir Next", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(900px 500px at 5% -15%, rgba(243, 185, 101, 0.35), transparent 65%),
+        linear-gradient(160deg, #f8f2e8 0%, #efe4d6 52%, #ece2d7 100%);
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+    .card {
+      width: min(760px, 100%);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 14px 34px rgba(35, 28, 20, 0.14);
+      padding: 24px;
+    }
+    h1 {
+      margin: 0;
+      line-height: 1.08;
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+      letter-spacing: -0.03em;
+    }
+    p {
+      margin: 12px 0 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .row { margin-top: 18px; }
+    .status {
+      margin-top: 12px;
+      min-height: 20px;
+      font-size: 0.95rem;
+      color: var(--muted);
+    }
+    .status.error { color: var(--warn); }
+    .token-box {
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+    }
+    .pair-code {
+      width: 100%;
+      border: 0;
+      outline: 0;
+      font: 700 1.6rem/1.2 "SFMono-Regular", Menlo, Consolas, monospace;
+      letter-spacing: 0.08em;
+      color: #1f3a44;
+      text-align: center;
+      background: transparent;
+      padding: 10px 0;
+    }
+    textarea {
+      width: 100%;
+      min-height: 136px;
+      border: 0;
+      outline: 0;
+      resize: vertical;
+      font: 500 0.9rem/1.45 "SFMono-Regular", Menlo, Consolas, monospace;
+      color: #1f3a44;
+      background: transparent;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    button, a.btn {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .copy-btn {
+      background: var(--accent);
+      color: #fff;
+    }
+    .back-btn {
+      background: #fff;
+      border-color: #c8b8a6;
+      color: #314048;
+    }
+    .helper {
+      margin-top: 10px;
+      font: 500 0.84rem/1.5 "SFMono-Regular", Menlo, Consolas, monospace;
+      color: #42565f;
+      background: rgba(36, 49, 56, 0.05);
+      border-radius: 8px;
+      padding: 8px 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .warn {
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(171,78,60,0.35);
+      background: rgba(171,78,60,0.08);
+      color: #7f2f22;
+      font-size: 0.92rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Login To Agent Huddle</h1>
+    <p>Sign in with Google. After login, you get a one-time code to enter on both machines. No manual offer/answer steps are required.</p>
+    <div class="row" id="google-btn"></div>
+    <div class="status" id="status">Waiting for Google sign-in.</div>
+    <div class="token-box">
+      <input id="pair-key" class="pair-code" readonly placeholder="---- ---- ----" />
+      <div class="actions">
+        <button class="copy-btn" id="copy-pair-key" type="button">Copy Code</button>
+        <button class="copy-btn" id="refresh-pair-key" type="button">Refresh Code</button>
+        <a class="btn back-btn" href="${escapedOrigin}/">Back To Home</a>
+      </div>
+      <pre class="helper" id="helper">Run this on both machines with the same code:
+npm run pair -- --pass-key '&lt;CODE&gt;'</pre>
+      <textarea id="token" readonly placeholder="Agent Huddle access token (setup/admin use only)." style="margin-top:10px;"></textarea>
+    </div>
+    ${missingClientId ? '<div class="warn">Google OAuth client id is missing on server. Set GOOGLE_OAUTH_CLIENT_ID in Worker secrets.</div>' : ""}
+  </main>
+  <script>
+    const googleClientId = ${clientIdJson};
+    const statusEl = document.getElementById("status");
+    const tokenEl = document.getElementById("token");
+    const pairKeyEl = document.getElementById("pair-key");
+    const helperEl = document.getElementById("helper");
+    const copyPairBtn = document.getElementById("copy-pair-key");
+    const refreshPairBtn = document.getElementById("refresh-pair-key");
+    let accessToken = "";
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.classList.toggle("error", Boolean(isError));
+    }
+
+    function setToken(token) {
+      tokenEl.value = token;
+      accessToken = token;
+    }
+
+    function setPairKey(pairKey) {
+      pairKeyEl.value = pairKey;
+      helperEl.textContent = "Run this on both machines with the same code:\\nnpm run pair -- --pass-key '" + pairKey + "'";
+    }
+
+    async function issuePairKey() {
+      if (!accessToken) {
+        setStatus("Missing access token; login again.", true);
+        return;
+      }
+      setStatus("Generating one-time code...");
+      try {
+        const resp = await fetch("/api/pair-key/issue", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "authorization": "Bearer " + accessToken,
+          },
+          body: JSON.stringify({ ttlSec: 600 }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok || !body.pairKey) {
+          setStatus("Code generation failed: " + JSON.stringify(body), true);
+          return;
+        }
+        setPairKey(String(body.pairKey));
+        setStatus("Code ready. Enter this code on both machines.");
+      } catch (error) {
+        setStatus("Code generation failed: " + String(error && error.message ? error.message : error), true);
+      }
+    }
+
+    async function handleGoogleCredential(response) {
+      const idToken = response && response.credential ? String(response.credential) : "";
+      if (!idToken) {
+        setStatus("Google credential was empty.", true);
+        return;
+      }
+      setStatus("Exchanging Google credential with Agent Huddle...");
+      try {
+        const resp = await fetch("/api/auth/google", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ idToken }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok || !body.accessToken) {
+          setStatus("Login failed: " + JSON.stringify(body), true);
+          return;
+        }
+        setToken(String(body.accessToken));
+        await issuePairKey();
+      } catch (error) {
+        setStatus("Login request failed: " + String(error && error.message ? error.message : error), true);
+      }
+    }
+
+    copyPairBtn.addEventListener("click", async () => {
+      if (!pairKeyEl.value) {
+        setStatus("No code available to copy yet.", true);
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(pairKeyEl.value);
+        setStatus("Code copied to clipboard.");
+      } catch {
+        pairKeyEl.select();
+        setStatus("Clipboard copy failed; code selected for manual copy.", true);
+      }
+    });
+
+    refreshPairBtn.addEventListener("click", async () => {
+      await issuePairKey();
+    });
+
+    window.addEventListener("load", () => {
+      if (!googleClientId) {
+        setStatus("Google login is not configured on this environment.", true);
+        return;
+      }
+      if (!(window.google && window.google.accounts && window.google.accounts.id)) {
+        setStatus("Google sign-in script failed to load. Refresh and try again.", true);
+        return;
+      }
+      window.google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: handleGoogleCredential,
+        auto_select: false,
+        cancel_on_tap_outside: true,
+      });
+      window.google.accounts.id.renderButton(
+        document.getElementById("google-btn"),
+        { theme: "outline", size: "large", shape: "pill", text: "signin_with", width: 280 },
+      );
+      window.google.accounts.id.prompt();
+    });
+  </script>
 </body>
 </html>`;
 }

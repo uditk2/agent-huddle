@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -34,12 +35,29 @@ const ICE_SERVERS = parseIceServers(
   process.env.WEBRTC_MCP_ICE_SERVERS ||
     JSON.stringify([{ urls: ["stun:stun.l.google.com:19302"] }]),
 );
+const HOSTED_SIGNALING_BASE_URL = (process.env.WEBRTC_MCP_SIGNALING_BASE_URL || "https://agenthuddle.synergiqai.com")
+  .trim()
+  .replace(/\/+$/, "");
+const HOSTED_SIGNALING_TOKEN = (process.env.WEBRTC_MCP_SIGNALING_TOKEN || "").trim();
 
 let runtimeHttpPort = HTTP_PORT;
 let wrtcCtor = null;
 let wrtcLoadError = null;
 let nodePtyModule = null;
 let nodePtyLoadError = null;
+let hostedPairProcess = null;
+let hostedPairState = {
+  status: "idle",
+  startedAt: null,
+  exitedAt: null,
+  exitCode: null,
+  signal: null,
+  pid: null,
+  passKeyMasked: null,
+  role: null,
+  peerId: null,
+  logs: [],
+};
 
 const sessions = new Map();
 const passIndex = new Map();
@@ -51,10 +69,25 @@ const issueSchema = z.object({
   label: z.string().trim().max(120).optional(),
 });
 
+const iceServerSchema = z
+  .object({
+    urls: z.union([z.string(), z.array(z.string()).min(1)]),
+    username: z.string().optional(),
+    credential: z.string().optional(),
+  })
+  .passthrough();
+
+const importPassKeySchema = z.object({
+  passKey: z.string().trim().min(6).max(128),
+  label: z.string().trim().max(120).optional(),
+  setActive: z.boolean().optional(),
+});
+
 const connectSchema = z.object({
   passKey: z.string().trim().min(4).max(128),
   offerSdp: z.string().min(10),
   label: z.string().trim().max(120).optional(),
+  iceServers: z.array(iceServerSchema).max(16).optional(),
 });
 
 const revokeSchema = z.object({
@@ -160,6 +193,14 @@ function generatePassKey() {
   }
 }
 
+function formatPassKey(value) {
+  const normalized = normalizePassKey(value);
+  if (normalized.length < 6) {
+    throw new Error("passKey must contain at least 6 alphanumeric characters");
+  }
+  return normalized.match(/.{1,4}/g).join("-");
+}
+
 function nowIso(ms = Date.now()) {
   return new Date(ms).toISOString();
 }
@@ -239,10 +280,19 @@ function compactSession(session) {
   };
 }
 
-function issuePassKey({ label, source = "http" } = {}) {
+function issuePassKey({ label, source = "http", passKey: providedPassKey } = {}) {
   const sessionId = crypto.randomUUID();
-  const passKey = generatePassKey();
+  const passKey = providedPassKey ? formatPassKey(providedPassKey) : generatePassKey();
   const passHash = hashPassKey(passKey);
+  const existingId = passIndex.get(passHash);
+  if (existingId) {
+    const existingSession = sessions.get(existingId);
+    if (existingSession) {
+      closeSession(existingSession, "passkey-replaced");
+    } else {
+      passIndex.delete(passHash);
+    }
+  }
   const issuedAt = Date.now();
   const expiresAt = issuedAt + PASSKEY_TTL_MS;
 
@@ -589,7 +639,7 @@ function setupPeerHandlers(session, peerConnection) {
   };
 }
 
-async function connectOffer({ passKey, offerSdp, label }) {
+async function connectOffer({ passKey, offerSdp, label, iceServers }) {
   let RTCPeerConnectionCtor;
   try {
     RTCPeerConnectionCtor = await resolveRTCPeerConnectionCtor();
@@ -612,7 +662,8 @@ async function connectOffer({ passKey, offerSdp, label }) {
   }
 
   try {
-    const peerConnection = new RTCPeerConnectionCtor({ iceServers: ICE_SERVERS });
+    const selectedIceServers = Array.isArray(iceServers) && iceServers.length > 0 ? iceServers : ICE_SERVERS;
+    const peerConnection = new RTCPeerConnectionCtor({ iceServers: selectedIceServers });
     session.peerConnection = peerConnection;
     setupPeerHandlers(session, peerConnection);
 
@@ -783,6 +834,44 @@ async function buildHttpServer() {
     });
   });
 
+  app.post("/api/passkeys/import", requireAdmin, (req, res) => {
+    const parsed = importPassKeySchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid-body", detail: parsed.error.flatten() });
+      return;
+    }
+
+    let issued;
+    try {
+      issued = issuePassKey({
+        label: parsed.data.label || "imported-passkey",
+        source: "http-import",
+        passKey: parsed.data.passKey,
+      });
+    } catch (error) {
+      res.status(400).json({ error: "invalid-passkey", detail: formatError(error) });
+      return;
+    }
+
+    const shouldSetActive = parsed.data.setActive !== false;
+    if (shouldSetActive) {
+      const active = getActivePassSession();
+      if (active && active.sessionId !== issued.session.sessionId && isSessionUsableForPass(active)) {
+        closeSession(active, "active-pass-replaced");
+      }
+      setActivePass(issued.session, issued.passKey);
+    }
+
+    res.status(201).json({
+      sessionId: issued.session.sessionId,
+      passKey: issued.passKey,
+      issuedAt: nowIso(issued.session.issuedAt),
+      expiresAt: nowIso(issued.session.expiresAt),
+      active: shouldSetActive,
+      connectEndpoint: getConnectUrl(),
+    });
+  });
+
   app.get("/api/passkeys/latest", requireAdmin, (_, res) => {
     res.json(activePassPayload());
   });
@@ -916,6 +1005,197 @@ function buildMachineAStep(passKey, connectEndpoint) {
   return parts.join(" ");
 }
 
+function hostedPairAvailable() {
+  return Boolean(HOSTED_SIGNALING_BASE_URL && HOSTED_SIGNALING_TOKEN);
+}
+
+function deriveImportUrl(connectUrl) {
+  if (!connectUrl) {
+    return "http://127.0.0.1:8787/api/passkeys/import";
+  }
+  if (connectUrl.endsWith("/api/connect")) {
+    return `${connectUrl.slice(0, -"/api/connect".length)}/api/passkeys/import`;
+  }
+  try {
+    const parsed = new URL(connectUrl);
+    parsed.pathname = "/api/passkeys/import";
+    parsed.search = "";
+    return parsed.toString();
+  } catch {
+    return "http://127.0.0.1:8787/api/passkeys/import";
+  }
+}
+
+function maskPassKey(passKey) {
+  const normalized = normalizePassKey(passKey || "");
+  if (normalized.length < 4) return "****";
+  return `****-****-${normalized.slice(-4)}`;
+}
+
+function appendHostedPairLog(line) {
+  const entry = `[${nowIso()}] ${line}`;
+  hostedPairState.logs.push(entry);
+  if (hostedPairState.logs.length > 120) {
+    hostedPairState.logs = hostedPairState.logs.slice(-120);
+  }
+}
+
+function hostedPairStatusPayload() {
+  return {
+    status: hostedPairState.status,
+    startedAt: hostedPairState.startedAt,
+    exitedAt: hostedPairState.exitedAt,
+    exitCode: hostedPairState.exitCode,
+    signal: hostedPairState.signal,
+    pid: hostedPairState.pid,
+    role: hostedPairState.role,
+    peerId: hostedPairState.peerId,
+    passKeyMasked: hostedPairState.passKeyMasked,
+    connectUrl: getConnectUrl(),
+    importUrl: deriveImportUrl(getConnectUrl()),
+    signalingBaseUrl: HOSTED_SIGNALING_BASE_URL || null,
+    signalingTokenConfigured: Boolean(HOSTED_SIGNALING_TOKEN),
+    logs: hostedPairState.logs.slice(-30),
+  };
+}
+
+function stopHostedPairProcess(reason = "stopped") {
+  if (!hostedPairProcess) {
+    return { ok: false, reason: "not-running", status: hostedPairStatusPayload() };
+  }
+  try {
+    hostedPairState.status = "stopping";
+    appendHostedPairLog(`stopping hosted pair process (${reason})`);
+    hostedPairProcess.kill("SIGTERM");
+    return { ok: true, reason, status: hostedPairStatusPayload() };
+  } catch (error) {
+    appendHostedPairLog(`failed to stop hosted pair process: ${formatError(error)}`);
+    return { ok: false, reason: formatError(error), status: hostedPairStatusPayload() };
+  }
+}
+
+function startHostedPairProcess({ passKey, role = "auto", peerId = "", restart = true }) {
+  if (!hostedPairAvailable()) {
+    return {
+      ok: false,
+      error: "hosted-signaling-not-configured",
+      detail: "WEBRTC_MCP_SIGNALING_BASE_URL and WEBRTC_MCP_SIGNALING_TOKEN are required.",
+      status: hostedPairStatusPayload(),
+    };
+  }
+
+  const normalizedPassKey = formatPassKey(passKey);
+  if (hostedPairProcess && hostedPairState.status === "running") {
+    if (!restart) {
+      return {
+        ok: false,
+        error: "already-running",
+        detail: "Hosted pair process already running on this machine.",
+        status: hostedPairStatusPayload(),
+      };
+    }
+    stopHostedPairProcess("restart-requested");
+  }
+
+  const scriptPath = path.join(RUNTIME_DIR, "scripts", "hosted_pair_client.js");
+  if (!fs.existsSync(scriptPath)) {
+    return {
+      ok: false,
+      error: "script-not-found",
+      detail: `Missing hosted pair script: ${scriptPath}`,
+      status: hostedPairStatusPayload(),
+    };
+  }
+
+  const connectUrl = getConnectUrl();
+  const importUrl = deriveImportUrl(connectUrl);
+  const args = [scriptPath, "--role", role, "--pass-key", normalizedPassKey];
+  if (peerId) {
+    args.push("--peer-id", peerId);
+  }
+
+  const env = {
+    ...process.env,
+    WEBRTC_MCP_SIGNALING_BASE_URL: HOSTED_SIGNALING_BASE_URL,
+    WEBRTC_MCP_SIGNALING_TOKEN: HOSTED_SIGNALING_TOKEN,
+    WEBRTC_MCP_CONNECT_URL: connectUrl,
+    WEBRTC_MCP_IMPORT_URL: importUrl,
+  };
+  if (ADMIN_TOKEN) {
+    env.WEBRTC_MCP_ADMIN_TOKEN = ADMIN_TOKEN;
+  }
+
+  const child = spawn(process.execPath, args, {
+    cwd: RUNTIME_DIR,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  hostedPairProcess = child;
+  hostedPairState = {
+    status: "running",
+    startedAt: nowIso(),
+    exitedAt: null,
+    exitCode: null,
+    signal: null,
+    pid: child.pid ?? null,
+    passKeyMasked: maskPassKey(normalizedPassKey),
+    role,
+    peerId: peerId || null,
+    logs: [],
+  };
+  appendHostedPairLog(`started hosted pair process pid=${child.pid} role=${role}`);
+
+  child.stdout?.on("data", (chunk) => {
+    const text = String(chunk ?? "").trim();
+    if (text) appendHostedPairLog(`stdout: ${text}`);
+  });
+  child.stderr?.on("data", (chunk) => {
+    const text = String(chunk ?? "").trim();
+    if (text) appendHostedPairLog(`stderr: ${text}`);
+  });
+  child.on("close", (code, signal) => {
+    hostedPairState.status = "exited";
+    hostedPairState.exitedAt = nowIso();
+    hostedPairState.exitCode = code;
+    hostedPairState.signal = signal ? String(signal) : null;
+    appendHostedPairLog(`process exited code=${code} signal=${signal ?? "none"}`);
+    hostedPairProcess = null;
+  });
+  child.on("error", (error) => {
+    hostedPairState.status = "error";
+    hostedPairState.exitedAt = nowIso();
+    hostedPairState.exitCode = -1;
+    hostedPairState.signal = null;
+    appendHostedPairLog(`process error: ${formatError(error)}`);
+    hostedPairProcess = null;
+  });
+
+  return { ok: true, status: hostedPairStatusPayload() };
+}
+
+function buildHostedPairSteps(passKey, connectEndpoint) {
+  const machineAny = ["npm", "run", "pair", "--", "--pass-key", shellSingleQuote(passKey)];
+  if (HOSTED_SIGNALING_BASE_URL) {
+    machineAny.push("--signaling-url", shellSingleQuote(HOSTED_SIGNALING_BASE_URL));
+  }
+  if (connectEndpoint) {
+    machineAny.push("--connect-url", shellSingleQuote(connectEndpoint));
+  }
+  return {
+    signalingUrl: HOSTED_SIGNALING_BASE_URL || null,
+    machineStep: machineAny.join(" "),
+    note: "Run the same machineStep on both machines with the same code. Roles are auto-selected.",
+    mcpTool: {
+      tool: "pair_with_code",
+      args: {
+        passKey,
+      },
+      note: "Preferred: call this MCP tool on each machine after user pastes code.",
+    },
+  };
+}
+
 function buildMcpServer() {
   const mcp = new McpServer({
     name: "webrtc-terminal-mcp",
@@ -963,6 +1243,45 @@ function buildMcpServer() {
   );
 
   mcp.tool(
+    "pair_with_code",
+    "Paste one-time pairing code and let this MCP server execute hosted auto-pair locally.",
+    {
+      passKey: z.string().trim().min(6).max(128),
+      role: z.enum(["auto", "machine_a", "machine_b"]).optional(),
+      peerId: z.string().trim().max(64).optional(),
+      restart: z.boolean().optional(),
+    },
+    async ({ passKey, role, peerId, restart }) => {
+      const result = startHostedPairProcess({
+        passKey,
+        role: role || "auto",
+        peerId: peerId || "",
+        restart: restart !== false,
+      });
+      return asToolText(result);
+    },
+  );
+
+  mcp.tool(
+    "pair_status",
+    "Show hosted auto-pair process status and recent logs for this machine.",
+    {},
+    async () => {
+      return asToolText(hostedPairStatusPayload());
+    },
+  );
+
+  mcp.tool(
+    "pair_stop",
+    "Stop hosted auto-pair process on this machine.",
+    {},
+    async () => {
+      const stopped = stopHostedPairProcess("stopped-via-mcp");
+      return asToolText(stopped);
+    },
+  );
+
+  mcp.tool(
     "onboarding",
     "First-run onboarding wizard for Codex, Claude Code, and VS Code MCP chat clients.",
     {
@@ -993,11 +1312,14 @@ function buildMcpServer() {
 
       if (!role) {
         const active = getActive();
+        const hosted = hostedPairAvailable() ? buildHostedPairSteps(active.passKey, active.connectEndpoint) : null;
         return asToolText({
           onboarding: state,
-          message: state.firstRun
-            ? "First run detected. Start with role=machine_b unless you were given a pass key by another machine."
-            : "Onboarding wizard. Choose role and follow the returned steps.",
+          message: hosted
+            ? "Paste the one-time code from agenthuddle site and call pair_with_code on each machine. No manual offer/answer steps."
+            : state.firstRun
+              ? "First run detected. Start with role=machine_b unless you were given a pass key by another machine."
+              : "Onboarding wizard. Choose role and follow the returned steps.",
           chooseOne: [
             {
               role: "machine_b",
@@ -1022,8 +1344,11 @@ function buildMcpServer() {
             connectEndpoint: active.connectEndpoint,
             machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
           },
+          hostedPairPreview: hosted,
           note:
-            "Portable slash commands are not supported uniformly across clients; use this onboarding tool as the common entry command.",
+            hosted
+              ? "Preferred flow: call pair_with_code on this MCP server after user pastes the site code."
+              : "Portable slash commands are not supported uniformly across clients; use this onboarding tool as the common entry command.",
         });
       }
 
@@ -1044,17 +1369,21 @@ function buildMcpServer() {
         }
 
         const active = getActive();
+        const hosted = hostedPairAvailable() ? buildHostedPairSteps(active.passKey, active.connectEndpoint) : null;
         return asToolText({
           onboarding: state,
           role: "machine_b",
           passKey: active.passKey,
           connectEndpoint: active.connectEndpoint,
           machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
+          hostedPair: hosted,
           machineBNextToolCall: {
             tool: "onboarding",
             args: { role: "machine_b", offerBlob: "OFFER_BLOB=..." },
           },
-          next: "Run machineAStep on Machine A. Then call onboarding again with role=machine_b and offerBlob.",
+          next: hosted
+            ? "Preferred: call hostedPair.mcpTool (pair_with_code) on both machines with the same code."
+            : "Run machineAStep on Machine A. Then call onboarding again with role=machine_b and offerBlob.",
         });
       }
 
@@ -1076,7 +1405,10 @@ function buildMcpServer() {
         onboarding: state,
         role: "machine_a",
         machineAStep: buildMachineAStep(passKey, connectEndpoint),
-        next: "Run machineAStep. It prints OFFER_BLOB. Send that to Machine B and continue there with onboarding(role=machine_b, offerBlob=...).",
+        hostedPair: hostedPairAvailable() ? buildHostedPairSteps(passKey, connectEndpoint) : null,
+        next: hostedPairAvailable()
+          ? "Preferred: call pair_with_code on both machines with the same code."
+          : "Run machineAStep. It prints OFFER_BLOB. Send that to Machine B and continue there with onboarding(role=machine_b, offerBlob=...).",
       });
     },
   );
@@ -1126,6 +1458,12 @@ function buildMcpServer() {
         httpHost: HTTP_HOST,
         httpPort: runtimeHttpPort,
         connectUrl: getConnectUrl(),
+        hostedSignaling: {
+          configured: hostedPairAvailable(),
+          signalingBaseUrl: HOSTED_SIGNALING_BASE_URL || null,
+          tokenConfigured: Boolean(HOSTED_SIGNALING_TOKEN),
+        },
+        pairRunner: hostedPairStatusPayload(),
         passkeyTtlMs: PASSKEY_TTL_MS,
         keepalivePingMs: KEEPALIVE_PING_MS,
         keepaliveTimeoutMs: KEEPALIVE_TIMEOUT_MS,
@@ -1149,7 +1487,7 @@ function buildMcpServer() {
         },
         onboarding: {
           ...state,
-          recommendedTool: state.firstRun ? "onboarding" : "connect",
+          recommendedTool: hostedPairAvailable() ? "pair_with_code" : state.firstRun ? "onboarding" : "connect",
         },
       });
     },
@@ -1205,12 +1543,14 @@ function buildMcpServer() {
         }
 
         const active = activePassPayload();
+        const hosted = hostedPairAvailable() ? buildHostedPairSteps(active.passKey, active.connectEndpoint) : null;
         return asToolText({
           onboarding: state,
           role: "machine_b",
           passKey: active.passKey,
           connectEndpoint: active.connectEndpoint,
           machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
+          hostedPair: hosted,
           machineANextToolCall: {
             tool: "connect",
             args: {
@@ -1226,7 +1566,9 @@ function buildMcpServer() {
               offerBlob: "OFFER_BLOB=...",
             },
           },
-          help: "Run machineAStep on Machine A. When Machine A returns OFFER_BLOB line, call connect again on Machine B with role=machine_b and offerBlob.",
+          help: hosted
+            ? "Preferred: call pair_with_code on both machines with the same code."
+            : "Run machineAStep on Machine A. When Machine A returns OFFER_BLOB line, call connect again on Machine B with role=machine_b and offerBlob.",
         });
       }
 
@@ -1248,7 +1590,10 @@ function buildMcpServer() {
         onboarding: state,
         role: "machine_a",
         machineAStep: buildMachineAStep(passKey, connectEndpoint),
-        next: "Run machineAStep in terminal on Machine A. It will print OFFER_BLOB line. Send that line to Machine B and call connect there with role=machine_b and offerBlob. No direct A->B API call is required in this default copy/paste path.",
+        hostedPair: hostedPairAvailable() ? buildHostedPairSteps(passKey, connectEndpoint) : null,
+        next: hostedPairAvailable()
+          ? "Preferred: call pair_with_code on both machines with the same code."
+          : "Run machineAStep in terminal on Machine A. It will print OFFER_BLOB line. Send that line to Machine B and call connect there with role=machine_b and offerBlob. No direct A->B API call is required in this default copy/paste path.",
       });
     },
   );
@@ -1259,10 +1604,12 @@ function buildMcpServer() {
     {},
     async () => {
       const active = activePassPayload();
+      const hosted = hostedPairAvailable() ? buildHostedPairSteps(active.passKey, active.connectEndpoint) : null;
       return asToolText({
         onboarding: onboardingSummary(),
         passKey: active.passKey,
         connectEndpoint: active.connectEndpoint,
+        hostedPair: hosted,
         roleA: "Machine A (offerer)",
         roleB: "Machine B (answerer)",
         machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
