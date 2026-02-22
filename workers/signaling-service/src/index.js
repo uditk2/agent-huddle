@@ -2,6 +2,7 @@ const DEFAULT_SESSION_TTL_SEC = 60 * 60;
 const DEFAULT_TURN_TTL_SEC = 10 * 60;
 const GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo";
 const GOOGLE_TOKEN_EXCHANGE_URL = "https://oauth2.googleapis.com/token";
+const GITHUB_REPO_URL = "https://github.com/uditk2/agent-huddle";
 
 export class SignalingRoom {
   constructor(state, env) {
@@ -208,6 +209,10 @@ export default {
 
     if (request.method === "OPTIONS") {
       return withCors(new Response(null, { status: 204 }), env, request);
+    }
+
+    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+      return html(renderHomepage(url.origin));
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -880,6 +885,376 @@ async function readJsonBody(request) {
   }
 }
 
+function renderHomepage(origin) {
+  const healthUrl = `${origin}/health`;
+  const authLoginUrl = `${origin}/api/auth/login`;
+  const authGoogleUrl = `${origin}/api/auth/google`;
+  const sessionUrl = `${origin}/api/sessions`;
+  const turnUrl = `${origin}/api/turn/credentials`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Huddle Signaling</title>
+  <meta name="description" content="Cloudflare signaling and authentication service for Agent Huddle." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='26' fill='%23243138'/%3E%3Cpath d='M27 80c19-38 57-38 76 0' stroke='%23f3b965' stroke-width='10' stroke-linecap='round' fill='none'/%3E%3Ccircle cx='64' cy='52' r='14' fill='%232f7f77'/%3E%3C/svg%3E" />
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap");
+
+    :root {
+      --sand: #f4eee3;
+      --paper: #fffaf0;
+      --ink: #243138;
+      --muted: #5a696f;
+      --teal: #2f7f77;
+      --coral: #d36a4f;
+      --sun: #f3b965;
+      --line: #d9cec0;
+      --card: rgba(255, 250, 240, 0.88);
+      --shadow: 0 18px 45px rgba(44, 35, 26, 0.14);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Plus Jakarta Sans", "Avenir Next", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1000px 580px at 8% -10%, rgba(243, 185, 101, 0.42), transparent 66%),
+        radial-gradient(760px 460px at 95% 0%, rgba(47, 127, 119, 0.18), transparent 65%),
+        linear-gradient(160deg, #f8f1e6 0%, #efe3d4 52%, #ece2d7 100%);
+      min-height: 100vh;
+    }
+
+    .texture::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(120deg, rgba(36,49,56,0.03) 25%, transparent 25%, transparent 50%, rgba(36,49,56,0.03) 50%, rgba(36,49,56,0.03) 75%, transparent 75%, transparent);
+      background-size: 14px 14px;
+      opacity: 0.28;
+    }
+
+    .orb {
+      position: fixed;
+      border-radius: 999px;
+      filter: blur(2px);
+      opacity: 0.45;
+      pointer-events: none;
+      animation: float 16s ease-in-out infinite;
+    }
+
+    .orb.a {
+      width: 220px;
+      height: 220px;
+      right: 10%;
+      top: 18%;
+      background: rgba(47,127,119,0.24);
+    }
+
+    .orb.b {
+      width: 140px;
+      height: 140px;
+      left: 7%;
+      bottom: 12%;
+      background: rgba(211,106,79,0.24);
+      animation-delay: -7s;
+    }
+
+    .wrap {
+      position: relative;
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 24px;
+      animation: rise 700ms ease both;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid rgba(36,49,56,0.18);
+      border-radius: 999px;
+      padding: 8px 14px;
+      color: var(--muted);
+      background: rgba(255,255,255,0.55);
+      backdrop-filter: blur(6px);
+      font-size: 13px;
+      letter-spacing: 0.03em;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #1f9b63;
+      box-shadow: 0 0 0 6px rgba(31,155,99,0.12);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 18px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 24px;
+      background: var(--card);
+      backdrop-filter: blur(2px);
+      box-shadow: var(--shadow);
+      animation: rise 820ms ease both;
+    }
+
+    .hero h1 {
+      margin: 0;
+      line-height: 1.05;
+      font-size: clamp(2rem, 5vw, 3.6rem);
+      letter-spacing: -0.03em;
+      font-weight: 720;
+      font-family: "Fraunces", "Iowan Old Style", "Book Antiqua", serif;
+      max-width: 11.5ch;
+    }
+
+    .hero p {
+      margin-top: 12px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.58;
+      max-width: 60ch;
+    }
+
+    .cta {
+      margin-top: 22px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      text-decoration: none;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      padding: 11px 16px;
+      font-weight: 600;
+      transition: transform 150ms ease, box-shadow 150ms ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 22px rgba(27, 37, 43, 0.16);
+    }
+
+    .btn.main {
+      background: linear-gradient(135deg, #2f7f77, #3a8f84);
+      color: white;
+    }
+
+    .btn.ghost {
+      border-color: rgba(36,49,56,0.22);
+      background: rgba(255,255,255,0.66);
+      color: #26343b;
+    }
+
+    .right h3 {
+      margin: 0;
+      font-size: 1.02rem;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: #496068;
+    }
+
+    .metrics {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      border: 1px dashed rgba(60,78,86,0.28);
+      border-radius: 13px;
+      padding: 11px 12px;
+      background: rgba(255,255,255,0.72);
+    }
+
+    .metric b {
+      display: block;
+      font-size: 1.2rem;
+      margin-bottom: 4px;
+    }
+
+    .metric span {
+      color: #607076;
+      font-size: 0.88rem;
+    }
+
+    .section {
+      margin-top: 18px;
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      animation: rise 980ms ease both;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: rgba(255, 250, 240, 0.84);
+      box-shadow: 0 10px 20px rgba(47, 35, 20, 0.08);
+    }
+
+    .card h4 {
+      margin: 0 0 8px;
+      font-size: 1.05rem;
+    }
+
+    .card p {
+      margin: 0;
+      color: #596a70;
+      font-size: 0.95rem;
+      line-height: 1.55;
+    }
+
+    .code {
+      margin-top: 10px;
+      display: inline-block;
+      background: rgba(36,49,56,0.08);
+      border-radius: 8px;
+      padding: 5px 8px;
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 0.84rem;
+      color: #32474f;
+    }
+
+    .footer {
+      margin-top: 24px;
+      text-align: center;
+      color: #617178;
+      font-size: 0.9rem;
+      animation: rise 1.05s ease both;
+    }
+
+    .footer a {
+      color: #9f4f3e;
+      text-decoration: none;
+      border-bottom: 1px solid rgba(159,79,62,0.3);
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-14px); }
+    }
+
+    @media (max-width: 860px) {
+      .hero,
+      .section {
+        grid-template-columns: 1fr;
+      }
+      .wrap {
+        padding: 20px 14px 30px;
+      }
+      .panel,
+      .card {
+        border-radius: 16px;
+      }
+      .metrics {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body class="texture">
+  <div class="orb a"></div>
+  <div class="orb b"></div>
+  <main class="wrap">
+    <div class="topbar">
+      <div class="badge"><span class="dot"></span> Agent Huddle Signal Stack</div>
+      <div class="badge">Cloudflare Worker + Durable Objects</div>
+    </div>
+
+    <section class="hero">
+      <article class="panel">
+        <h1>Signaling that ships with real auth and relay controls.</h1>
+        <p>
+          This endpoint powers WebRTC session creation, Google/password login, and TURN credential minting
+          for Agent Huddle. It is tuned for direct peer-first connections with relay fallback where needed.
+        </p>
+        <div class="cta">
+          <a class="btn main" href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">View GitHub Repository</a>
+          <a class="btn ghost" href="${healthUrl}" target="_blank" rel="noreferrer">Open Health Endpoint</a>
+        </div>
+      </article>
+
+      <aside class="panel right">
+        <h3>Live Surface</h3>
+        <div class="metrics">
+          <div class="metric"><b>Auth</b><span>Password + Google OAuth</span></div>
+          <div class="metric"><b>WebSocket</b><span>Durable Object signaling rooms</span></div>
+          <div class="metric"><b>TURN</b><span>Cloudflare Realtime credentials</span></div>
+          <div class="metric"><b>Domain</b><span>agenthuddle.synergiqai.com</span></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section">
+      <article class="card">
+        <h4>Authentication API</h4>
+        <p>Issue access tokens through password or Google sign-in, then inspect identity context with <code>/api/auth/me</code>.</p>
+        <span class="code">POST ${authLoginUrl}</span><br />
+        <span class="code">POST ${authGoogleUrl}</span>
+      </article>
+      <article class="card">
+        <h4>Session and Signaling</h4>
+        <p>Create or join sessions, then exchange offers, answers, and ICE over room-scoped sockets.</p>
+        <span class="code">POST ${sessionUrl}</span>
+      </article>
+      <article class="card">
+        <h4>TURN Credential Minting</h4>
+        <p>Generate short-lived ICE relay credentials from Cloudflare Realtime TURN using authenticated API calls.</p>
+        <span class="code">POST ${turnUrl}</span>
+      </article>
+      <article class="card">
+        <h4>Service Health</h4>
+        <p>Operational heartbeat endpoint with timestamped status for uptime and monitor integrations.</p>
+        <span class="code">GET ${healthUrl}</span>
+      </article>
+    </section>
+
+    <footer class="footer">
+      Built for practical operations and human-friendly defaults.
+      Source: <a href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">github.com/uditk2/agent-huddle</a>
+    </footer>
+  </main>
+</body>
+</html>`;
+}
+
 function parsePositiveInt(value, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) {
@@ -902,6 +1277,16 @@ function json(payload, status = 200) {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function html(markup, status = 200) {
+  return new Response(markup, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
     },
   });
