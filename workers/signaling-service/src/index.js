@@ -237,6 +237,21 @@ export default {
       return html(renderPairPage(url.origin));
     }
 
+    if (request.method === "GET" && url.pathname === "/logout") {
+      const response = Response.redirect(`${url.origin}/login`, 302);
+      response.headers.set(
+        "set-cookie",
+        [
+          "agentHuddleAccessToken=",
+          "Max-Age=0",
+          "Path=/",
+          "SameSite=Lax",
+          "Secure",
+        ].join("; "),
+      );
+      return response;
+    }
+
     if (request.method === "GET" && url.pathname === "/health") {
       return withCors(
         json({
@@ -275,19 +290,26 @@ export default {
         env.SIGNALING_JWT_SECRET,
       );
 
-      return withCors(
-        json({
-          accessToken: token,
-          tokenType: "Bearer",
-          expiresInSec: ttlSec,
-          user: {
-            id: username,
-            provider: "password",
-          },
-        }),
-        env,
-        request,
+      const response = json({
+        accessToken: token,
+        tokenType: "Bearer",
+        expiresInSec: ttlSec,
+        user: {
+          id: username,
+          provider: "password",
+        },
+      });
+      response.headers.set(
+        "set-cookie",
+        [
+          "agentHuddleAccessToken=" + encodeURIComponent(token),
+          "Max-Age=" + ttlSec,
+          "Path=/",
+          "SameSite=Lax",
+          "Secure",
+        ].join("; "),
       );
+      return withCors(response, env, request);
     }
 
     if (request.method === "POST" && url.pathname === "/api/auth/google") {
@@ -378,23 +400,30 @@ export default {
         env.SIGNALING_JWT_SECRET,
       );
 
-      return withCors(
-        json({
-          accessToken: token,
-          tokenType: "Bearer",
-          expiresInSec: ttlSec,
-          user: {
-            id: sub,
-            provider: "google",
-            email: profile.email || null,
-            name: profile.name || null,
-            picture: profile.picture || null,
-            hd: profile.hd || null,
-          },
-        }),
-        env,
-        request,
+      const response = json({
+        accessToken: token,
+        tokenType: "Bearer",
+        expiresInSec: ttlSec,
+        user: {
+          id: sub,
+          provider: "google",
+          email: profile.email || null,
+          name: profile.name || null,
+          picture: profile.picture || null,
+          hd: profile.hd || null,
+        },
+      });
+      response.headers.set(
+        "set-cookie",
+        [
+          "agentHuddleAccessToken=" + encodeURIComponent(token),
+          "Max-Age=" + ttlSec,
+          "Path=/",
+          "SameSite=Lax",
+          "Secure",
+        ].join("; "),
       );
+      return withCors(response, env, request);
     }
 
     if (request.method === "POST" && url.pathname === "/api/auth/github") {
@@ -430,23 +459,30 @@ export default {
         env.SIGNALING_JWT_SECRET,
       );
 
-      return withCors(
-        json({
-          accessToken: token,
-          tokenType: "Bearer",
-          expiresInSec: ttlSec,
-          user: {
-            id: sub,
-            provider: "github",
-            username: profile.login || null,
-            email: profile.email || null,
-            name: profile.name || null,
-            picture: profile.avatarUrl || null,
-          },
-        }),
-        env,
-        request,
+      const response = json({
+        accessToken: token,
+        tokenType: "Bearer",
+        expiresInSec: ttlSec,
+        user: {
+          id: sub,
+          provider: "github",
+          username: profile.login || null,
+          email: profile.email || null,
+          name: profile.name || null,
+          picture: profile.avatarUrl || null,
+        },
+      });
+      response.headers.set(
+        "set-cookie",
+        [
+          "agentHuddleAccessToken=" + encodeURIComponent(token),
+          "Max-Age=" + ttlSec,
+          "Path=/",
+          "SameSite=Lax",
+          "Secure",
+        ].join("; "),
       );
+      return withCors(response, env, request);
     }
 
     if (request.method === "GET" && url.pathname === "/api/auth/me") {
@@ -2451,7 +2487,14 @@ function renderPairPage(origin) {
     logoutBtn.addEventListener("click", () => {
       sessionStorage.removeItem(tokenStorageKey);
       localStorage.removeItem(tokenStorageKeyPersistent);
-      window.location.href = "${escapedOrigin}/login";
+      document.cookie = [
+        tokenStorageKey + "=",
+        "Max-Age=0",
+        "Path=/",
+        "SameSite=Lax",
+        "Secure",
+      ].join("; ");
+      window.location.href = "${escapedOrigin}/logout";
     });
 
     async function initPairPage() {
