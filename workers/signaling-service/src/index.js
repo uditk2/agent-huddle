@@ -1828,6 +1828,7 @@ function renderLoginPage(origin, googleClientId) {
     const googleClientId = ${clientIdJson};
     const statusEl = document.getElementById("status");
     const tokenStorageKey = "agentHuddleAccessToken";
+    const tokenStorageKeyPersistent = "agentHuddleAccessTokenPersistent";
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message;
@@ -1852,7 +1853,17 @@ function renderLoginPage(origin, googleClientId) {
           setStatus("Login failed: " + JSON.stringify(body), true);
           return;
         }
-        sessionStorage.setItem(tokenStorageKey, String(body.accessToken));
+        const tokenValue = String(body.accessToken);
+        const ttlSec = Number(body.expiresInSec) > 0 ? Math.floor(Number(body.expiresInSec)) : 3600;
+        sessionStorage.setItem(tokenStorageKey, tokenValue);
+        localStorage.setItem(tokenStorageKeyPersistent, tokenValue);
+        document.cookie = [
+          tokenStorageKey + "=" + encodeURIComponent(tokenValue),
+          "path=/",
+          "max-age=" + ttlSec,
+          "SameSite=Lax",
+          "Secure",
+        ].join("; ");
         setStatus("Login successful. Redirecting to pairing page...");
         window.location.href = "${escapedOrigin}/pair";
       } catch (error) {
@@ -2177,6 +2188,7 @@ function renderPairPage(origin) {
   </main>
   <script>
     const tokenStorageKey = "agentHuddleAccessToken";
+    const tokenStorageKeyPersistent = "agentHuddleAccessTokenPersistent";
     const statusEl = document.getElementById("status");
     const tokenEl = document.getElementById("token");
     const pairKeyEl = document.getElementById("pair-key");
@@ -2193,6 +2205,19 @@ function renderPairPage(origin) {
     const railEl = document.querySelector(".flow-visual .rail");
     let accessToken = "";
     let statusPollTimer = null;
+    let hasInitialized = false;
+
+    function readCookie(name) {
+      const prefix = name + "=";
+      const parts = String(document.cookie || "").split(";");
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed.startsWith(prefix)) {
+          return decodeURIComponent(trimmed.slice(prefix.length));
+        }
+      }
+      return "";
+    }
 
     function escapeHtml(text) {
       return String(text || "")
@@ -2425,14 +2450,28 @@ function renderPairPage(origin) {
 
     logoutBtn.addEventListener("click", () => {
       sessionStorage.removeItem(tokenStorageKey);
+      localStorage.removeItem(tokenStorageKeyPersistent);
       window.location.href = "${escapedOrigin}/login";
     });
 
-    window.addEventListener("load", async () => {
-      accessToken = sessionStorage.getItem(tokenStorageKey) || "";
+    async function initPairPage() {
+      if (hasInitialized) return;
+      hasInitialized = true;
+      accessToken =
+        sessionStorage.getItem(tokenStorageKey) ||
+        localStorage.getItem(tokenStorageKeyPersistent) ||
+        readCookie(tokenStorageKey) ||
+        "";
       tokenEl.value = accessToken;
       await issuePairKey();
-    });
+    }
+
+    if (document.readyState === "complete" || document.readyState === "interactive") {
+      initPairPage();
+    } else {
+      window.addEventListener("DOMContentLoaded", initPairPage);
+      window.addEventListener("load", initPairPage);
+    }
   </script>
 </body>
 </html>`;
