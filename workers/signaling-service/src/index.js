@@ -1,3 +1,5 @@
+import { renderPairingFlowSvg } from "./pairing-flow-svg.js";
+
 const DEFAULT_SESSION_TTL_SEC = 60 * 60;
 const DEFAULT_TURN_TTL_SEC = 10 * 60;
 const GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo";
@@ -217,9 +219,17 @@ export default {
       return html(renderHomepage(url.origin));
     }
 
+    if (request.method === "GET" && url.pathname === "/assets/pairing-flow.svg") {
+      return svg(renderPairingFlowSvg());
+    }
+
     if (request.method === "GET" && url.pathname === "/login") {
       const clientId = String(env.GOOGLE_OAUTH_CLIENT_ID || "").trim();
       return html(renderLoginPage(url.origin, clientId));
+    }
+
+    if (request.method === "GET" && url.pathname === "/pair") {
+      return html(renderPairPage(url.origin));
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -1169,6 +1179,8 @@ function renderHomepage(origin) {
   const sessionUrl = `${origin}/api/sessions`;
   const turnUrl = `${origin}/api/turn/credentials`;
   const loginUrl = `${origin}/login`;
+  const pairUrl = `${origin}/pair`;
+  const flowSvgUrl = `${origin}/assets/pairing-flow.svg`;
 
   return `<!doctype html>
 <html lang="en">
@@ -1368,6 +1380,20 @@ function renderHomepage(origin) {
       gap: 10px;
     }
 
+    .diagram {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.68);
+      padding: 8px;
+    }
+
+    .diagram svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
     .metric {
       border: 1px dashed rgba(60,78,86,0.28);
       border-radius: 13px;
@@ -1392,6 +1418,42 @@ function renderHomepage(origin) {
       gap: 14px;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       animation: rise 980ms ease both;
+    }
+
+    .flow {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.64);
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .flow-step {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 10px;
+      align-items: start;
+    }
+
+    .flow-step b {
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: rgba(47, 127, 119, 0.12);
+      border: 1px solid rgba(47, 127, 119, 0.3);
+      color: #1d4f4a;
+      font-size: 0.88rem;
+    }
+
+    .flow-step span {
+      color: #4f6168;
+      font-size: 0.92rem;
+      line-height: 1.45;
+      padding-top: 2px;
     }
 
     .card {
@@ -1478,25 +1540,43 @@ function renderHomepage(origin) {
 
     <section class="hero">
       <article class="panel">
-        <h1>Signaling that ships with real auth and relay controls.</h1>
+        <h1>Paste one code in MCP and pair two machines without manual signaling.</h1>
         <p>
-          This endpoint powers WebRTC session creation, Google/password login, and TURN credential minting
-          for Agent Huddle. It is tuned for direct peer-first connections with relay fallback where needed.
+          Agent Huddle uses hosted signaling plus TURN fallback so users only handle one thing: the one-time
+          code. Login happens first, code generation happens on the post-login page, and MCP handles pair flow.
         </p>
+        <div class="flow">
+          <div class="flow-step">
+            <b>1</b>
+            <span>Open <code>/login</code> and authenticate with Google.</span>
+          </div>
+          <div class="flow-step">
+            <b>2</b>
+            <span>After login, continue to <code>/pair</code> where the one-time code is issued.</span>
+          </div>
+          <div class="flow-step">
+            <b>3</b>
+            <span>Paste that code in both MCP chats via <code>pair_with_code</code>; signaling and TURN are automatic.</span>
+          </div>
+        </div>
         <div class="cta">
           <a class="btn main" href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">View GitHub Repository</a>
           <a class="btn ghost" href="${healthUrl}" target="_blank" rel="noreferrer">Open Health Endpoint</a>
-          <a class="btn ghost" href="${loginUrl}" target="_blank" rel="noreferrer">Login (Google)</a>
+          <a class="btn ghost" href="${loginUrl}" target="_blank" rel="noreferrer">Login</a>
+          <a class="btn ghost" href="${pairUrl}" target="_blank" rel="noreferrer">Post-Login Pair Page</a>
         </div>
       </article>
 
       <aside class="panel right">
-        <h3>Live Surface</h3>
+        <h3>Concept Surface</h3>
         <div class="metrics">
-          <div class="metric"><b>Auth</b><span>Password + Google OAuth</span></div>
-          <div class="metric"><b>WebSocket</b><span>Durable Object signaling rooms</span></div>
-          <div class="metric"><b>TURN</b><span>Cloudflare Realtime credentials</span></div>
-          <div class="metric"><b>Domain</b><span>agenthuddle.synergiqai.com</span></div>
+          <div class="metric"><b>Input</b><span>One-time code only</span></div>
+          <div class="metric"><b>MCP</b><span><code>pair_with_code</code> flow</span></div>
+          <div class="metric"><b>Signaling</b><span>Hosted Durable Object rooms</span></div>
+          <div class="metric"><b>Relay</b><span>Cloudflare TURN credentials</span></div>
+        </div>
+        <div class="diagram" aria-label="Pairing flow diagram">
+          <img src="${flowSvgUrl}" alt="Pairing flow: login, post-login code issue, MCP pairing, signaling and TURN between two machines." />
         </div>
       </aside>
     </section>
@@ -1681,72 +1761,22 @@ function renderLoginPage(origin, googleClientId) {
 <body>
   <main class="card">
     <h1>Login To Agent Huddle</h1>
-    <p>Sign in with Google. After login, you get a one-time code to enter on both machines. No manual offer/answer steps are required.</p>
+    <p>Sign in with Google, then continue to the post-login pairing page where the one-time code is generated.</p>
     <div class="row" id="google-btn"></div>
     <div class="status" id="status">Waiting for Google sign-in.</div>
-    <div class="token-box">
-      <input id="pair-key" class="pair-code" readonly placeholder="---- ---- ----" />
-      <div class="actions">
-        <button class="copy-btn" id="copy-pair-key" type="button">Copy Code</button>
-        <button class="copy-btn" id="refresh-pair-key" type="button">Refresh Code</button>
-        <a class="btn back-btn" href="${escapedOrigin}/">Back To Home</a>
-      </div>
-      <pre class="helper" id="helper">Run this on both machines with the same code:
-npm run pair -- --pass-key '&lt;CODE&gt;'</pre>
-      <textarea id="token" readonly placeholder="Agent Huddle access token (setup/admin use only)." style="margin-top:10px;"></textarea>
+    <div class="actions">
+      <a class="btn back-btn" href="${escapedOrigin}/">Back To Home</a>
     </div>
     ${missingClientId ? '<div class="warn">Google OAuth client id is missing on server. Set GOOGLE_OAUTH_CLIENT_ID in Worker secrets.</div>' : ""}
   </main>
   <script>
     const googleClientId = ${clientIdJson};
     const statusEl = document.getElementById("status");
-    const tokenEl = document.getElementById("token");
-    const pairKeyEl = document.getElementById("pair-key");
-    const helperEl = document.getElementById("helper");
-    const copyPairBtn = document.getElementById("copy-pair-key");
-    const refreshPairBtn = document.getElementById("refresh-pair-key");
-    let accessToken = "";
+    const tokenStorageKey = "agentHuddleAccessToken";
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message;
       statusEl.classList.toggle("error", Boolean(isError));
-    }
-
-    function setToken(token) {
-      tokenEl.value = token;
-      accessToken = token;
-    }
-
-    function setPairKey(pairKey) {
-      pairKeyEl.value = pairKey;
-      helperEl.textContent = "Run this on both machines with the same code:\\nnpm run pair -- --pass-key '" + pairKey + "'";
-    }
-
-    async function issuePairKey() {
-      if (!accessToken) {
-        setStatus("Missing access token; login again.", true);
-        return;
-      }
-      setStatus("Generating one-time code...");
-      try {
-        const resp = await fetch("/api/pair-key/issue", {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "authorization": "Bearer " + accessToken,
-          },
-          body: JSON.stringify({ ttlSec: 600 }),
-        });
-        const body = await resp.json().catch(() => ({}));
-        if (!resp.ok || !body.pairKey) {
-          setStatus("Code generation failed: " + JSON.stringify(body), true);
-          return;
-        }
-        setPairKey(String(body.pairKey));
-        setStatus("Code ready. Enter this code on both machines.");
-      } catch (error) {
-        setStatus("Code generation failed: " + String(error && error.message ? error.message : error), true);
-      }
     }
 
     async function handleGoogleCredential(response) {
@@ -1767,30 +1797,13 @@ npm run pair -- --pass-key '&lt;CODE&gt;'</pre>
           setStatus("Login failed: " + JSON.stringify(body), true);
           return;
         }
-        setToken(String(body.accessToken));
-        await issuePairKey();
+        sessionStorage.setItem(tokenStorageKey, String(body.accessToken));
+        setStatus("Login successful. Redirecting to pairing page...");
+        window.location.href = "${escapedOrigin}/pair";
       } catch (error) {
         setStatus("Login request failed: " + String(error && error.message ? error.message : error), true);
       }
     }
-
-    copyPairBtn.addEventListener("click", async () => {
-      if (!pairKeyEl.value) {
-        setStatus("No code available to copy yet.", true);
-        return;
-      }
-      try {
-        await navigator.clipboard.writeText(pairKeyEl.value);
-        setStatus("Code copied to clipboard.");
-      } catch {
-        pairKeyEl.select();
-        setStatus("Clipboard copy failed; code selected for manual copy.", true);
-      }
-    });
-
-    refreshPairBtn.addEventListener("click", async () => {
-      await issuePairKey();
-    });
 
     window.addEventListener("load", () => {
       if (!googleClientId) {
@@ -1812,6 +1825,234 @@ npm run pair -- --pass-key '&lt;CODE&gt;'</pre>
         { theme: "outline", size: "large", shape: "pill", text: "signin_with", width: 280 },
       );
       window.google.accounts.id.prompt();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function renderPairPage(origin) {
+  const escapedOrigin = escapeHtml(origin);
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Huddle Pairing</title>
+  <meta name="description" content="Post-login page for issuing and using one-time pairing codes." />
+  <style>
+    :root {
+      --bg: #f4efe5;
+      --card: #fffaf2;
+      --ink: #243138;
+      --muted: #5a686d;
+      --line: #d8ccbc;
+      --accent: #2f7f77;
+      --warn: #ab4e3c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "Plus Jakarta Sans", "Avenir Next", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(900px 500px at 5% -15%, rgba(243, 185, 101, 0.35), transparent 65%),
+        linear-gradient(160deg, #f8f2e8 0%, #efe4d6 52%, #ece2d7 100%);
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+    .card {
+      width: min(760px, 100%);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 14px 34px rgba(35, 28, 20, 0.14);
+      padding: 24px;
+    }
+    h1 {
+      margin: 0;
+      line-height: 1.08;
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+      letter-spacing: -0.03em;
+    }
+    p {
+      margin: 12px 0 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .status {
+      margin-top: 12px;
+      min-height: 20px;
+      font-size: 0.95rem;
+      color: var(--muted);
+    }
+    .status.error { color: var(--warn); }
+    .token-box {
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+    }
+    .pair-code {
+      width: 100%;
+      border: 0;
+      outline: 0;
+      font: 700 1.6rem/1.2 "SFMono-Regular", Menlo, Consolas, monospace;
+      letter-spacing: 0.08em;
+      color: #1f3a44;
+      text-align: center;
+      background: transparent;
+      padding: 10px 0;
+    }
+    textarea {
+      width: 100%;
+      min-height: 136px;
+      border: 0;
+      outline: 0;
+      resize: vertical;
+      font: 500 0.9rem/1.45 "SFMono-Regular", Menlo, Consolas, monospace;
+      color: #1f3a44;
+      background: transparent;
+      margin-top: 10px;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    button, a.btn {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    .copy-btn {
+      background: var(--accent);
+      color: #fff;
+    }
+    .back-btn {
+      background: #fff;
+      border-color: #c8b8a6;
+      color: #314048;
+    }
+    .helper {
+      margin-top: 10px;
+      font: 500 0.84rem/1.5 "SFMono-Regular", Menlo, Consolas, monospace;
+      color: #42565f;
+      background: rgba(36, 49, 56, 0.05);
+      border-radius: 8px;
+      padding: 8px 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Pair Machines</h1>
+    <p>Use the one-time code below on both machines. Signaling and TURN are handled through Agent Huddle.</p>
+    <div class="status" id="status">Checking login session...</div>
+    <div class="token-box">
+      <input id="pair-key" class="pair-code" readonly placeholder="---- ---- ----" />
+      <div class="actions">
+        <button class="copy-btn" id="copy-pair-key" type="button">Copy Code</button>
+        <button class="copy-btn" id="refresh-pair-key" type="button">Refresh Code</button>
+        <button class="back-btn" id="logout-btn" type="button">Sign Out</button>
+        <a class="btn back-btn" href="${escapedOrigin}/">Back To Home</a>
+      </div>
+      <pre class="helper" id="helper">Use this same code on both machines in MCP pair_with_code flow.</pre>
+      <textarea id="token" readonly placeholder="Agent Huddle access token (setup/admin use only)."></textarea>
+    </div>
+  </main>
+  <script>
+    const tokenStorageKey = "agentHuddleAccessToken";
+    const statusEl = document.getElementById("status");
+    const tokenEl = document.getElementById("token");
+    const pairKeyEl = document.getElementById("pair-key");
+    const helperEl = document.getElementById("helper");
+    const copyPairBtn = document.getElementById("copy-pair-key");
+    const refreshPairBtn = document.getElementById("refresh-pair-key");
+    const logoutBtn = document.getElementById("logout-btn");
+    let accessToken = "";
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.classList.toggle("error", Boolean(isError));
+    }
+
+    function setPairKey(pairKey) {
+      pairKeyEl.value = pairKey;
+      helperEl.textContent = "Use this same code on both machines in MCP pair_with_code flow.";
+    }
+
+    async function issuePairKey() {
+      if (!accessToken) {
+        setStatus("No login token found. Redirecting to login...", true);
+        window.location.href = "${escapedOrigin}/login";
+        return;
+      }
+      setStatus("Generating one-time code...");
+      try {
+        const resp = await fetch("/api/pair-key/issue", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "authorization": "Bearer " + accessToken,
+          },
+          body: JSON.stringify({ ttlSec: 600 }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok || !body.pairKey) {
+          if (resp.status === 401) {
+            sessionStorage.removeItem(tokenStorageKey);
+            setStatus("Session expired. Redirecting to login...", true);
+            window.location.href = "${escapedOrigin}/login";
+            return;
+          }
+          setStatus("Code generation failed: " + JSON.stringify(body), true);
+          return;
+        }
+        setPairKey(String(body.pairKey));
+        setStatus("Code ready. Paste this code in both MCP chats.");
+      } catch (error) {
+        setStatus("Code generation failed: " + String(error && error.message ? error.message : error), true);
+      }
+    }
+
+    copyPairBtn.addEventListener("click", async () => {
+      if (!pairKeyEl.value) {
+        setStatus("No code available to copy yet.", true);
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(pairKeyEl.value);
+        setStatus("Code copied to clipboard.");
+      } catch {
+        pairKeyEl.select();
+        setStatus("Clipboard copy failed; code selected for manual copy.", true);
+      }
+    });
+
+    refreshPairBtn.addEventListener("click", async () => {
+      await issuePairKey();
+    });
+
+    logoutBtn.addEventListener("click", () => {
+      sessionStorage.removeItem(tokenStorageKey);
+      window.location.href = "${escapedOrigin}/login";
+    });
+
+    window.addEventListener("load", async () => {
+      accessToken = sessionStorage.getItem(tokenStorageKey) || "";
+      tokenEl.value = accessToken;
+      await issuePairKey();
     });
   </script>
 </body>
@@ -1851,6 +2092,16 @@ function html(markup, status = 200) {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
+    },
+  });
+}
+
+function svg(markup, status = 200) {
+  return new Response(markup, {
+    status,
+    headers: {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "cache-control": "public, max-age=300",
     },
   });
 }
