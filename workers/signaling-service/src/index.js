@@ -1173,13 +1173,7 @@ async function readJsonBody(request) {
 }
 
 function renderHomepage(origin) {
-  const healthUrl = `${origin}/health`;
-  const authLoginUrl = `${origin}/api/auth/login`;
-  const authGoogleUrl = `${origin}/api/auth/google`;
-  const sessionUrl = `${origin}/api/sessions`;
-  const turnUrl = `${origin}/api/turn/credentials`;
   const loginUrl = `${origin}/login`;
-  const pairUrl = `${origin}/pair`;
   const flowSvgUrl = `${origin}/assets/pairing-flow.svg`;
 
   return `<!doctype html>
@@ -1187,8 +1181,8 @@ function renderHomepage(origin) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Agent Huddle Signaling</title>
-  <meta name="description" content="Cloudflare signaling and authentication service for Agent Huddle." />
+  <title>Agent Huddle</title>
+  <meta name="description" content="Connect machines with different capabilities and run one coordinated workflow through MCP." />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='26' fill='%23243138'/%3E%3Cpath d='M27 80c19-38 57-38 76 0' stroke='%23f3b965' stroke-width='10' stroke-linecap='round' fill='none'/%3E%3Ccircle cx='64' cy='52' r='14' fill='%232f7f77'/%3E%3C/svg%3E" />
   <style>
     @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap");
@@ -1198,9 +1192,6 @@ function renderHomepage(origin) {
       --paper: #fffaf0;
       --ink: #243138;
       --muted: #5a696f;
-      --teal: #2f7f77;
-      --coral: #d36a4f;
-      --sun: #f3b965;
       --line: #d9cec0;
       --card: rgba(255, 250, 240, 0.88);
       --shadow: 0 18px 45px rgba(44, 35, 26, 0.14);
@@ -1265,7 +1256,7 @@ function renderHomepage(origin) {
 
     .topbar {
       display: flex;
-      justify-content: space-between;
+      justify-content: flex-start;
       align-items: center;
       gap: 14px;
       margin-bottom: 24px;
@@ -1317,7 +1308,7 @@ function renderHomepage(origin) {
       letter-spacing: -0.03em;
       font-weight: 720;
       font-family: "Fraunces", "Iowan Old Style", "Book Antiqua", serif;
-      max-width: 11.5ch;
+      max-width: 13ch;
     }
 
     .hero p {
@@ -1326,7 +1317,7 @@ function renderHomepage(origin) {
       color: var(--muted);
       font-size: 1.02rem;
       line-height: 1.58;
-      max-width: 60ch;
+      max-width: 64ch;
     }
 
     .cta {
@@ -1359,146 +1350,49 @@ function renderHomepage(origin) {
       color: white;
     }
 
-    .btn.ghost {
-      border-color: rgba(36,49,56,0.22);
-      background: rgba(255,255,255,0.66);
-      color: #26343b;
-    }
-
-    .right h3 {
-      margin: 0;
-      font-size: 1.02rem;
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-      color: #496068;
-    }
-
-    .metrics {
-      margin-top: 14px;
+    .benefits {
+      margin-top: 16px;
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
     }
 
-    .diagram {
+    .benefit {
+      border: 1px dashed rgba(60,78,86,0.28);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.72);
+      padding: 10px 12px;
+      color: #51636a;
+      font-size: 0.93rem;
+      line-height: 1.45;
+    }
+
+    .right h2 {
+      margin: 0;
+      line-height: 1.15;
+      font-size: 1.22rem;
+      letter-spacing: -0.01em;
+      color: #395058;
+    }
+
+    .right p {
       margin-top: 14px;
       border: 1px solid var(--line);
       border-radius: 14px;
       background: rgba(255,255,255,0.68);
-      padding: 8px;
-    }
-
-    .diagram svg {
-      width: 100%;
-      height: auto;
-      display: block;
-    }
-
-    .metric {
-      border: 1px dashed rgba(60,78,86,0.28);
-      border-radius: 13px;
-      padding: 11px 12px;
-      background: rgba(255,255,255,0.72);
-    }
-
-    .metric b {
-      display: block;
-      font-size: 1.2rem;
-      margin-bottom: 4px;
-    }
-
-    .metric span {
-      color: #607076;
-      font-size: 0.88rem;
-    }
-
-    .section {
-      margin-top: 18px;
-      display: grid;
-      gap: 14px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      animation: rise 980ms ease both;
-    }
-
-    .flow {
-      margin-top: 14px;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.64);
-      padding: 12px;
-      display: grid;
-      gap: 10px;
-    }
-
-    .flow-step {
-      display: grid;
-      grid-template-columns: 28px 1fr;
-      gap: 10px;
-      align-items: start;
-    }
-
-    .flow-step b {
-      display: inline-grid;
-      place-items: center;
-      width: 28px;
-      height: 28px;
-      border-radius: 999px;
-      background: rgba(47, 127, 119, 0.12);
-      border: 1px solid rgba(47, 127, 119, 0.3);
-      color: #1d4f4a;
-      font-size: 0.88rem;
-    }
-
-    .flow-step span {
-      color: #4f6168;
-      font-size: 0.92rem;
-      line-height: 1.45;
-      padding-top: 2px;
-    }
-
-    .card {
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 18px;
-      background: rgba(255, 250, 240, 0.84);
-      box-shadow: 0 10px 20px rgba(47, 35, 20, 0.08);
-    }
-
-    .card h4 {
-      margin: 0 0 8px;
-      font-size: 1.05rem;
-    }
-
-    .card p {
-      margin: 0;
-      color: #596a70;
-      font-size: 0.95rem;
-      line-height: 1.55;
-    }
-
-    .code {
-      margin-top: 10px;
-      display: inline-block;
-      background: rgba(36,49,56,0.08);
-      border-radius: 8px;
-      padding: 5px 8px;
-      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
-      font-size: 0.84rem;
-      color: #32474f;
+      padding: 10px;
     }
 
     .footer {
-      margin-top: 24px;
-      text-align: center;
+      margin-top: 20px;
       color: #617178;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       animation: rise 1.05s ease both;
     }
 
     .footer a {
-      color: #9f4f3e;
+      color: #2e6f68;
       text-decoration: none;
-      border-bottom: 1px solid rgba(159,79,62,0.3);
+      border-bottom: 1px solid rgba(46,111,104,0.3);
     }
 
     @keyframes rise {
@@ -1512,19 +1406,14 @@ function renderHomepage(origin) {
     }
 
     @media (max-width: 860px) {
-      .hero,
-      .section {
+      .hero {
         grid-template-columns: 1fr;
       }
       .wrap {
         padding: 20px 14px 30px;
       }
-      .panel,
-      .card {
+      .panel {
         border-radius: 16px;
-      }
-      .metrics {
-        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -1534,79 +1423,37 @@ function renderHomepage(origin) {
   <div class="orb b"></div>
   <main class="wrap">
     <div class="topbar">
-      <div class="badge"><span class="dot"></span> Agent Huddle Signal Stack</div>
-      <div class="badge">Cloudflare Worker + Durable Objects</div>
+      <div class="badge"><span class="dot"></span> Agent Huddle</div>
     </div>
 
     <section class="hero">
       <article class="panel">
-        <h1>Paste one code in MCP and pair two machines without manual signaling.</h1>
+        <h1>One task. Multiple machines. Combined capability.</h1>
         <p>
-          Agent Huddle uses hosted signaling plus TURN fallback so users only handle one thing: the one-time
-          code. Login happens first, code generation happens on the post-login page, and MCP handles pair flow.
+          Different machines have different strengths: one might have browser access, one might have internal
+          network reach, one might have GPU or local files. Agent Huddle lets MCP agents bridge those machines
+          into one coordinated workflow so you can complete tasks that were blocked on a single machine.
         </p>
-        <div class="flow">
-          <div class="flow-step">
-            <b>1</b>
-            <span>Open <code>/login</code> and authenticate with Google.</span>
-          </div>
-          <div class="flow-step">
-            <b>2</b>
-            <span>After login, continue to <code>/pair</code> where the one-time code is issued.</span>
-          </div>
-          <div class="flow-step">
-            <b>3</b>
-            <span>Paste that code in both MCP chats via <code>pair_with_code</code>; signaling and TURN are automatic.</span>
-          </div>
+        <div class="benefits">
+          <div class="benefit">Use resources across environments without manual offer/answer steps.</div>
+          <div class="benefit">Fail over automatically from direct P2P to TURN relay when networks are restrictive.</div>
+          <div class="benefit">Keep operator flow simple: login once, get code, paste code in MCP.</div>
         </div>
         <div class="cta">
-          <a class="btn main" href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">View GitHub Repository</a>
-          <a class="btn ghost" href="${healthUrl}" target="_blank" rel="noreferrer">Open Health Endpoint</a>
-          <a class="btn ghost" href="${loginUrl}" target="_blank" rel="noreferrer">Login</a>
-          <a class="btn ghost" href="${pairUrl}" target="_blank" rel="noreferrer">Post-Login Pair Page</a>
+          <a class="btn main" href="${loginUrl}" target="_blank" rel="noreferrer">Get Started</a>
         </div>
       </article>
 
       <aside class="panel right">
-        <h3>Concept Surface</h3>
-        <div class="metrics">
-          <div class="metric"><b>Input</b><span>One-time code only</span></div>
-          <div class="metric"><b>MCP</b><span><code>pair_with_code</code> flow</span></div>
-          <div class="metric"><b>Signaling</b><span>Hosted Durable Object rooms</span></div>
-          <div class="metric"><b>Relay</b><span>Cloudflare TURN credentials</span></div>
-        </div>
-        <div class="diagram" aria-label="Pairing flow diagram">
+        <h2>Quick Start Flow</h2>
+        <p>Authenticate, get one-time code on the post-login pairing page, then paste the code in MCP on both machines.</p>
+        <div aria-label="Pairing flow diagram">
           <img src="${flowSvgUrl}" alt="Pairing flow: login, post-login code issue, MCP pairing, signaling and TURN between two machines." />
         </div>
       </aside>
     </section>
 
-    <section class="section">
-      <article class="card">
-        <h4>Authentication API</h4>
-        <p>Issue access tokens through password or Google sign-in, then inspect identity context with <code>/api/auth/me</code>.</p>
-        <span class="code">POST ${authLoginUrl}</span><br />
-        <span class="code">POST ${authGoogleUrl}</span>
-      </article>
-      <article class="card">
-        <h4>Session and Signaling</h4>
-        <p>Create or join sessions, then exchange offers, answers, and ICE over room-scoped sockets.</p>
-        <span class="code">POST ${sessionUrl}</span>
-      </article>
-      <article class="card">
-        <h4>TURN Credential Minting</h4>
-        <p>Generate short-lived ICE relay credentials from Cloudflare Realtime TURN using authenticated API calls.</p>
-        <span class="code">POST ${turnUrl}</span>
-      </article>
-      <article class="card">
-        <h4>Service Health</h4>
-        <p>Operational heartbeat endpoint with timestamped status for uptime and monitor integrations.</p>
-        <span class="code">GET ${healthUrl}</span>
-      </article>
-    </section>
-
     <footer class="footer">
-      Built for practical operations and human-friendly defaults.
       Source: <a href="${GITHUB_REPO_URL}" target="_blank" rel="noreferrer">github.com/uditk2/agent-huddle</a>
     </footer>
   </main>
