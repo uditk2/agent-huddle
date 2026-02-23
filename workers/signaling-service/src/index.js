@@ -1,12 +1,17 @@
 import { renderPairingFlowSvg } from "./pairing-flow-svg.js";
+import { PairKeyStore } from "./pair-key-store.js";
 
 const DEFAULT_SESSION_TTL_SEC = 60 * 60;
 const DEFAULT_TURN_TTL_SEC = 10 * 60;
+const DEFAULT_PAIR_KEY_TTL_SEC = 10 * 60;
+const DEFAULT_PAIR_KEY_MAX_REDEEMS = 6;
 const GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo";
 const GOOGLE_TOKEN_EXCHANGE_URL = "https://oauth2.googleapis.com/token";
 const GITHUB_USER_API_URL = "https://api.github.com/user";
 const GITHUB_USER_EMAILS_API_URL = "https://api.github.com/user/emails";
 const GITHUB_REPO_URL = "https://github.com/uditk2/agent-huddle";
+
+export { PairKeyStore };
 
 export class SignalingRoom {
   constructor(state, env) {
@@ -473,16 +478,36 @@ export default {
       }
 
       const body = await readJsonBody(request);
-      const ttlSec = parsePositiveInt(body.ttlSec, parsePositiveInt(env.TURN_DEFAULT_TTL_SEC, DEFAULT_TURN_TTL_SEC));
+      const ttlSec = parsePositiveInt(body.ttlSec, parsePositiveInt(env.PAIR_KEY_TTL_SEC, DEFAULT_PAIR_KEY_TTL_SEC));
+      const maxRedeems = parsePositiveInt(body.maxRedeems, parsePositiveInt(env.PAIR_KEY_MAX_REDEEMS, DEFAULT_PAIR_KEY_MAX_REDEEMS));
       const pairKey = generatePairKey();
       const nowMs = Date.now();
-      const expiresAt = new Date(nowMs + ttlSec * 1000).toISOString();
+      const expiresAtMs = nowMs + ttlSec * 1000;
+      const storeIssued = await issuePairKeyRecord(env, {
+        pairKey,
+        expiresAtMs,
+        maxRedeems,
+        ownerClaims: {
+          sub: auth.claims.sub,
+          provider: auth.claims.provider || "password",
+          email: auth.claims.email || "",
+          name: auth.claims.name || "",
+          picture: auth.claims.picture || "",
+          hd: auth.claims.hd || "",
+          username: auth.claims.username || "",
+        },
+      });
+
+      if (!storeIssued.ok) {
+        return withCors(json({ error: storeIssued.error, detail: storeIssued.detail }, storeIssued.status), env, request);
+      }
 
       return withCors(
         json({
           pairKey,
           expiresInSec: ttlSec,
-          expiresAt,
+          expiresAt: new Date(expiresAtMs).toISOString(),
+          maxRedeems,
           note: "Use this one-time code on both machines to auto-match in hosted pairing.",
         }),
         env,
@@ -514,66 +539,12 @@ export default {
       return withCors(json(turn), env, request);
     }
 
-    if (request.method === "POST" && url.pathname === "/api/rendezvous") {
-      const auth = await requireUser(request, env);
-      if (auth.errorResponse) {
-        return withCors(auth.errorResponse, env, request);
-      }
-
-      const body = await readJsonBody(request);
-      const rawPassKey = typeof body.passKey === "string" ? body.passKey.trim() : "";
-      if (!rawPassKey) {
-        return withCors(json({ error: "missing-pass-key" }, 400), env, request);
-      }
-
-      const normalizedPassKey = normalizePassKey(rawPassKey);
-      if (normalizedPassKey.length < 6) {
-        return withCors(json({ error: "pass-key-too-short" }, 400), env, request);
-      }
-
-      const sessionId = await deriveRendezvousSessionId(normalizedPassKey);
-      const safeSubject = toPeerSlug(auth.claims.sub);
-      const peerId = sanitizePeerId(body.peerId) || `${safeSubject}-${makeShortId()}`;
-      const joinTtlSec = parsePositiveInt(body.joinTtlSec, parsePositiveInt(env.SIGNALING_SESSION_TTL_SEC, DEFAULT_SESSION_TTL_SEC));
-
-      const joinToken = await signJwt(
-        {
-          sub: auth.claims.sub,
-          scope: "ws",
-          sid: sessionId,
-          pid: peerId,
-        },
-        joinTtlSec,
-        env.SIGNALING_JWT_SECRET,
-      );
-
-      const wsUrl = buildWsUrl(url, sessionId, joinToken, peerId);
-      const autoTurn = (env.TURN_AUTO_ON_SESSION || "true").toLowerCase() !== "false";
-
-      let turn = null;
-      if (autoTurn) {
-        const turnTtlSec = parsePositiveInt(body.turnTtlSec, parsePositiveInt(env.TURN_DEFAULT_TTL_SEC, DEFAULT_TURN_TTL_SEC));
-        const result = await generateTurnCredentials(env, {
-          ttlSec: turnTtlSec,
-          customIdentifier: buildTurnIdentifier(auth.claims.sub, sessionId),
-        });
-        if (!result.error) {
-          turn = result;
-        }
-      }
-
-      return withCors(
-        json({
-          sessionId,
-          peerId,
-          joinToken,
-          joinExpiresInSec: joinTtlSec,
-          wsUrl,
-          turn,
-        }),
-        env,
-        request,
-      );
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/api/connect" || url.pathname === "/api/rendezvous")
+    ) {
+      const response = await handlePairKeyConnect(request, url, env);
+      return withCors(response, env, request);
     }
 
     if (request.method === "POST" && url.pathname === "/api/sessions") {
@@ -762,6 +733,162 @@ async function requireUser(request, env) {
   return {
     claims: verified.payload,
   };
+}
+
+async function callPairKeyStore(env, path, payload) {
+  if (!env.PAIR_KEY_STORE) {
+    return {
+      ok: false,
+      status: 500,
+      body: { error: "server-misconfigured", detail: "PAIR_KEY_STORE binding missing" },
+    };
+  }
+
+  const id = env.PAIR_KEY_STORE.idFromName("global");
+  const stub = env.PAIR_KEY_STORE.get(id);
+  const response = await stub.fetch(
+    new Request(`https://pair-key-store${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    }),
+  );
+  const body = await response.json().catch(() => ({}));
+  return {
+    ok: response.ok,
+    status: response.status,
+    body,
+  };
+}
+
+async function issuePairKeyRecord(env, payload) {
+  const result = await callPairKeyStore(env, "/issue", payload);
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status || 500,
+      error: result.body?.error || "pair-key-store-issue-failed",
+      detail: result.body?.detail || result.body || null,
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    body: result.body || {},
+  };
+}
+
+async function redeemPairKeyRecord(env, payload) {
+  const result = await callPairKeyStore(env, "/redeem", payload);
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status || 500,
+      error: result.body?.error || "pair-key-store-redeem-failed",
+      detail: result.body?.detail || result.body || null,
+      body: result.body || {},
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    body: result.body || {},
+  };
+}
+
+function clampInt(value, min, max) {
+  const n = Number(value);
+  const lo = Number.isFinite(min) ? min : 1;
+  const hi = Number.isFinite(max) ? max : lo;
+  if (!Number.isFinite(n) || n <= 0) {
+    return lo;
+  }
+  return Math.max(lo, Math.min(Math.floor(n), hi));
+}
+
+async function handlePairKeyConnect(request, url, env) {
+  if (!env.SIGNALING_JWT_SECRET) {
+    return json({ error: "server-misconfigured", detail: "SIGNALING_JWT_SECRET missing" }, 500);
+  }
+
+  const body = await readJsonBody(request);
+  const rawPassKey = typeof body.passKey === "string" ? body.passKey.trim() : "";
+  if (!rawPassKey) {
+    return json({ error: "missing-pass-key" }, 400);
+  }
+
+  const normalizedPassKey = normalizePassKey(rawPassKey);
+  if (normalizedPassKey.length < 6) {
+    return json({ error: "pass-key-too-short" }, 400);
+  }
+
+  const redeemed = await redeemPairKeyRecord(env, { pairKey: normalizedPassKey });
+  if (!redeemed.ok) {
+    return json({ error: redeemed.error, detail: redeemed.detail }, redeemed.status);
+  }
+
+  const ownerClaims = redeemed.body?.ownerClaims && typeof redeemed.body.ownerClaims === "object"
+    ? redeemed.body.ownerClaims
+    : {};
+  const ownerSub = String(ownerClaims.sub || "").trim();
+  const ownerKey = ownerSub || `pair-key:${normalizedPassKey.slice(-8)}`;
+  const safeSubject = toPeerSlug(ownerKey);
+
+  const sessionId = await deriveRendezvousSessionId(normalizedPassKey);
+  const peerId = sanitizePeerId(body.peerId) || `${safeSubject}-${makeShortId()}`;
+
+  const configuredConnectTtl = parsePositiveInt(env.PAIR_KEY_CONNECT_TTL_SEC, DEFAULT_PAIR_KEY_TTL_SEC);
+  const requestedJoinTtl = parsePositiveInt(body.joinTtlSec, configuredConnectTtl);
+  const remainingSec = parsePositiveInt(redeemed.body?.expiresInSec, configuredConnectTtl);
+  const joinTtlSec = clampInt(requestedJoinTtl, 1, Math.min(configuredConnectTtl, remainingSec));
+
+  const joinToken = await signJwt(
+    {
+      sub: ownerKey,
+      scope: "ws",
+      sid: sessionId,
+      pid: peerId,
+      provider: ownerClaims.provider || "pair_key",
+      email: ownerClaims.email || "",
+      name: ownerClaims.name || "",
+      picture: ownerClaims.picture || "",
+      hd: ownerClaims.hd || "",
+      username: ownerClaims.username || "",
+    },
+    joinTtlSec,
+    env.SIGNALING_JWT_SECRET,
+  );
+
+  const wsUrl = buildWsUrl(url, sessionId, joinToken, peerId);
+  const autoTurn = (env.TURN_AUTO_ON_SESSION || "true").toLowerCase() !== "false";
+
+  let turn = null;
+  if (autoTurn) {
+    const requestedTurnTtl = parsePositiveInt(body.turnTtlSec, parsePositiveInt(env.TURN_DEFAULT_TTL_SEC, DEFAULT_TURN_TTL_SEC));
+    const turnTtlSec = clampInt(requestedTurnTtl, 1, joinTtlSec);
+    const result = await generateTurnCredentials(env, {
+      ttlSec: turnTtlSec,
+      customIdentifier: buildTurnIdentifier(ownerKey, sessionId),
+    });
+    if (!result.error) {
+      turn = result;
+    }
+  }
+
+  return json({
+    sessionId,
+    peerId,
+    joinToken,
+    joinExpiresInSec: joinTtlSec,
+    wsUrl,
+    turn,
+    matchmaking: {
+      passKeyValid: true,
+      redeemCount: Number(redeemed.body?.redeemCount || 0),
+      maxRedeems: Number(redeemed.body?.maxRedeems || 0),
+      expiresAt: redeemed.body?.expiresAt || null,
+    },
+  });
 }
 
 function extractBearerToken(request) {

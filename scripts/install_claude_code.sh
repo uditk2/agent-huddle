@@ -7,6 +7,7 @@ RUNTIME_DIR_ARG="${2:-}"
 SERVER_NAME="webrtc-terminal"
 PREPARE_SCRIPT="$REPO_DIR/scripts/prepare_runtime.sh"
 BOOTSTRAP_SCRIPT="$REPO_DIR/scripts/bootstrap_hosted_signaling.sh"
+ENABLE_BOOTSTRAP="${WEBRTC_MCP_ENABLE_BOOTSTRAP:-0}"
 SKIP_BOOTSTRAP="${WEBRTC_MCP_SKIP_BOOTSTRAP:-${WEBRTC_MCP_SKIP_GITHUB_BOOTSTRAP:-0}}"
 
 file_has_server_name() {
@@ -48,13 +49,20 @@ if [[ ! -x "$SERVER_CMD" ]]; then
   exit 1
 fi
 
-if [[ "$SKIP_BOOTSTRAP" != "1" ]]; then
+if [[ "$SKIP_BOOTSTRAP" == "1" ]]; then
+  ENABLE_BOOTSTRAP="0"
+fi
+
+if [[ "$ENABLE_BOOTSTRAP" == "1" ]]; then
   if [[ ! -x "$BOOTSTRAP_SCRIPT" ]]; then
     echo "Error: missing executable bootstrap script: $BOOTSTRAP_SCRIPT"
     exit 1
   fi
   echo "Bootstrapping hosted signaling login + pair key..."
   "$BOOTSTRAP_SCRIPT" "$RUNTIME_DIR" "${WEBRTC_MCP_PAIR_KEY:-}"
+else
+  echo "Skipping hosted signaling bootstrap (default behavior)."
+  echo "To enable during install, rerun with: WEBRTC_MCP_ENABLE_BOOTSTRAP=1 $0 $SCOPE ${RUNTIME_DIR_ARG:-}"
 fi
 
 # Remove existing entry in the selected scope to keep install idempotent.

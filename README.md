@@ -22,15 +22,15 @@ VS Code (workspace MCP config):
 
 Notes:
 - Install scripts set up isolated runtime and run `npm install` there.
-- Install scripts run hosted-signaling bootstrap by default.
+- Install scripts are offline by default (no hosted auth/token prompt).
 - VS Code generator writes/updates `.vscode/mcp.json` with `servers.webrtc-terminal`.
 - Use through Codex/Claude as MCP tools. `npm start` is optional for standalone local testing.
 
 ## User Steps (Hosted Pair)
 
 1. Install MCP server on both machines (`install_codex.sh` or `install_claude_code.sh user`).
-2. Login at `https://agenthuddle.synergiqai.com/login`.
-3. Copy the one-time code shown on the site.
+2. Call MCP tool `onboarding` and choose `connectMode='automated'`.
+3. Login at `https://agenthuddle.synergiqai.com/login`, then open `/pair` and copy the one-time code.
 4. In Codex/Claude on machine 1, call MCP tool `pair_with_code` with `passKey='<CODE>'`.
 5. In Codex/Claude on machine 2, call MCP tool `pair_with_code` with the same `passKey`.
 6. Verify with MCP tool `pair_status` on either machine.
@@ -70,9 +70,10 @@ See `workers/signaling-service/README.md` for deploy and API usage.
 
 - `WEBRTC_MCP_AUTH_PROVIDER=google|github|token`
 - `WEBRTC_MCP_SIGNALING_BASE_URL=https://agenthuddle.synergiqai.com`
-- `WEBRTC_MCP_SIGNALING_TOKEN=<token>` (required for `token` provider)
+- `WEBRTC_MCP_SIGNALING_TOKEN=<token>` (optional fallback for legacy hosted API auth)
 - `WEBRTC_MCP_PAIR_KEY=<optional-fixed-passkey>`
-- `WEBRTC_MCP_SKIP_BOOTSTRAP=1` (skip bootstrap in install scripts)
+- `WEBRTC_MCP_ENABLE_BOOTSTRAP=1` (opt-in hosted bootstrap during install)
+- `WEBRTC_MCP_SKIP_BOOTSTRAP=1` (force skip bootstrap if enabled elsewhere)
 
 ## Local Service Watcher Agent
 

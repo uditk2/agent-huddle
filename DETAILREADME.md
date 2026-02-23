@@ -114,16 +114,17 @@ Optional: if you later expose signaling on a public URL, set `WEBRTC_MCP_PUBLIC_
 This is the preferred production flow when using `agenthuddle.synergiqai.com` + TURN.
 
 1. Run installer (`install_codex.sh` or `install_claude_code.sh`).
-2. Bootstrap prompts login on `https://agenthuddle.synergiqai.com/login`.
-3. Login page returns one-time code (`pairKey`).
-4. On each machine, call MCP tool:
+2. In MCP, call `onboarding` and choose `connectMode='automated'`.
+3. Login on `https://agenthuddle.synergiqai.com/login` and open `/pair`.
+4. Copy one-time code (`pairKey`).
+5. On each machine, call MCP tool:
    - `pair_with_code` with `passKey='<PASSKEY>'`
 
 Notes:
 - `pair_with_code` executes hosted pair command locally in MCP server process.
 - Auto mode selects role (`offerer`/`answerer`) by peer IDs and completes signaling automatically.
-- Hosted pair consumes TURN credentials from rendezvous and injects them into WebRTC setup.
-- If bootstrap should be skipped during install, set `WEBRTC_MCP_SKIP_BOOTSTRAP=1`.
+- Hosted pair consumes TURN credentials from `/api/connect` and injects them into WebRTC setup.
+- Installers are offline by default. Optional legacy bootstrap: set `WEBRTC_MCP_ENABLE_BOOTSTRAP=1`.
 
 ## ICE examples
 

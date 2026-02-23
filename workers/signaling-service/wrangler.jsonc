@@ -14,6 +14,10 @@
       {
         "name": "SIGNALING_ROOM",
         "class_name": "SignalingRoom"
+      },
+      {
+        "name": "PAIR_KEY_STORE",
+        "class_name": "PairKeyStore"
       }
     ]
   },
@@ -21,11 +25,18 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["SignalingRoom"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["PairKeyStore"]
     }
   ],
   "vars": {
     "ALLOWED_ORIGINS": "*",
     "SIGNALING_SESSION_TTL_SEC": "3600",
+    "PAIR_KEY_TTL_SEC": "600",
+    "PAIR_KEY_CONNECT_TTL_SEC": "600",
+    "PAIR_KEY_MAX_REDEEMS": "6",
     "TURN_DEFAULT_TTL_SEC": "600",
     "TURN_AUTO_ON_SESSION": "true",
     "GOOGLE_OAUTH_ALLOWED_DOMAINS": "",

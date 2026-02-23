@@ -1006,7 +1006,7 @@ function buildMachineAStep(passKey, connectEndpoint) {
 }
 
 function hostedPairAvailable() {
-  return Boolean(HOSTED_SIGNALING_BASE_URL && HOSTED_SIGNALING_TOKEN);
+  return Boolean(HOSTED_SIGNALING_BASE_URL);
 }
 
 function deriveImportUrl(connectUrl) {
@@ -1079,7 +1079,7 @@ function startHostedPairProcess({ passKey, role = "auto", peerId = "", restart =
     return {
       ok: false,
       error: "hosted-signaling-not-configured",
-      detail: "WEBRTC_MCP_SIGNALING_BASE_URL and WEBRTC_MCP_SIGNALING_TOKEN are required.",
+      detail: "WEBRTC_MCP_SIGNALING_BASE_URL is required.",
       status: hostedPairStatusPayload(),
     };
   }
@@ -1285,6 +1285,7 @@ function buildMcpServer() {
     "onboarding",
     "First-run onboarding wizard for Codex, Claude Code, and VS Code MCP chat clients.",
     {
+      connectMode: z.enum(["automated", "manual"]).optional(),
       role: z.enum(["machine_a", "machine_b"]).optional(),
       passKey: z.string().trim().min(4).max(128).optional(),
       connectEndpoint: z.string().trim().url().optional(),
@@ -1292,7 +1293,7 @@ function buildMcpServer() {
       rotate: z.boolean().optional(),
       label: z.string().trim().max(120).optional(),
     },
-    async ({ role, passKey, connectEndpoint, offerBlob, rotate, label }) => {
+    async ({ connectMode, role, passKey, connectEndpoint, offerBlob, rotate, label }) => {
       markOnboardingShown();
       const state = onboardingSummary();
 
@@ -1310,21 +1311,94 @@ function buildMcpServer() {
         };
       };
 
-      if (!role) {
-        const active = getActive();
-        const hosted = hostedPairAvailable() ? buildHostedPairSteps(active.passKey, active.connectEndpoint) : null;
+      if (!connectMode) {
         return asToolText({
           onboarding: state,
-          message: hosted
-            ? "Paste the one-time code from agenthuddle site and call pair_with_code on each machine. No manual offer/answer steps."
-            : state.firstRun
-              ? "First run detected. Start with role=machine_b unless you were given a pass key by another machine."
-              : "Onboarding wizard. Choose role and follow the returned steps.",
+          message: "Choose onboarding mode.",
+          chooseOne: [
+            {
+              connectMode: "automated",
+              when: "Use Agent Huddle website code and auto-pair.",
+              nextToolCall: {
+                tool: "onboarding",
+                args: { connectMode: "automated" },
+              },
+            },
+            {
+              connectMode: "manual",
+              when: "Use direct offer/answer flow without hosted signaling.",
+              nextToolCall: {
+                tool: "onboarding",
+                args: { connectMode: "manual" },
+              },
+            },
+          ],
+        });
+      }
+
+      if (connectMode === "automated") {
+        const selectedRole = role || "auto";
+        const onboardingRole = role || "machine_b";
+        const loginUrl = `${HOSTED_SIGNALING_BASE_URL}/login`;
+        const pairUrl = `${HOSTED_SIGNALING_BASE_URL}/pair`;
+        if (!passKey) {
+          return asToolText({
+            onboarding: state,
+            connectMode: "automated",
+            role: selectedRole,
+            message: "Login to Agent Huddle, get the one-time code, then paste that code here.",
+            steps: [
+              `Open ${loginUrl}`,
+              `After login, open ${pairUrl} and copy the code`,
+              "Call onboarding again with connectMode='automated' and passKey='<CODE>'",
+            ],
+            nextToolCall: {
+              tool: "onboarding",
+              args: {
+                connectMode: "automated",
+                role: onboardingRole,
+                passKey: "<CODE>",
+              },
+            },
+            directToolCall: {
+              tool: "pair_with_code",
+              args: {
+                passKey: "<CODE>",
+                role: selectedRole,
+              },
+            },
+          });
+        }
+
+        return asToolText({
+          onboarding: state,
+          connectMode: "automated",
+          role: selectedRole,
+          passKey,
+          next: "Run pair_with_code on both machines with the same code. The signaling service validates pass key and coordinates roles.",
+          mcpTool: {
+            tool: "pair_with_code",
+            args: {
+              passKey,
+              role: selectedRole,
+            },
+          },
+        });
+      }
+
+      if (!role) {
+        const active = getActive();
+        return asToolText({
+          onboarding: state,
+          connectMode: "manual",
+          message: state.firstRun
+            ? "Manual mode selected. Start with role=machine_b unless you were given a pass key by another machine."
+            : "Manual mode selected. Choose role and follow the returned steps.",
           chooseOne: [
             {
               role: "machine_b",
               when: "This machine hosts the MCP server terminal",
-              nextToolCall: { tool: "onboarding", args: { role: "machine_b" } },
+              nextToolCall: { tool: "onboarding", args: { connectMode: "manual", role: "machine_b" } },
             },
             {
               role: "machine_a",
@@ -1332,6 +1406,7 @@ function buildMcpServer() {
               nextToolCall: {
                 tool: "onboarding",
                 args: {
+                  connectMode: "manual",
                   role: "machine_a",
                   passKey: "<from machine_b>",
                   connectEndpoint: "<from machine_b>",
@@ -1344,11 +1419,7 @@ function buildMcpServer() {
             connectEndpoint: active.connectEndpoint,
             machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
           },
-          hostedPairPreview: hosted,
-          note:
-            hosted
-              ? "Preferred flow: call pair_with_code on this MCP server after user pastes the site code."
-              : "Portable slash commands are not supported uniformly across clients; use this onboarding tool as the common entry command.",
+          note: "Manual flow uses offer/answer copy-paste and does not depend on hosted signaling.",
         });
       }
 
@@ -1360,6 +1431,7 @@ function buildMcpServer() {
           }
           return asToolText({
             onboarding: onboardingSummary(),
+            connectMode: "manual",
             role: "machine_b",
             ...answered,
             next: answered.error
@@ -1369,31 +1441,30 @@ function buildMcpServer() {
         }
 
         const active = getActive();
-        const hosted = hostedPairAvailable() ? buildHostedPairSteps(active.passKey, active.connectEndpoint) : null;
         return asToolText({
           onboarding: state,
+          connectMode: "manual",
           role: "machine_b",
           passKey: active.passKey,
           connectEndpoint: active.connectEndpoint,
           machineAStep: buildMachineAStep(active.passKey, active.connectEndpoint),
-          hostedPair: hosted,
           machineBNextToolCall: {
             tool: "onboarding",
-            args: { role: "machine_b", offerBlob: "OFFER_BLOB=..." },
+            args: { connectMode: "manual", role: "machine_b", offerBlob: "OFFER_BLOB=..." },
           },
-          next: hosted
-            ? "Preferred: call hostedPair.mcpTool (pair_with_code) on both machines with the same code."
-            : "Run machineAStep on Machine A. Then call onboarding again with role=machine_b and offerBlob.",
+          next: "Run machineAStep on Machine A. Then call onboarding again with connectMode='manual', role='machine_b', and offerBlob.",
         });
       }
 
       if (!passKey || !connectEndpoint) {
         return asToolText({
           onboarding: state,
+          connectMode: "manual",
           role: "machine_a",
           error: "missing-passkey-or-endpoint",
-          help: "Get these from Machine B by calling onboarding with role=machine_b.",
+          help: "Get these from Machine B by calling onboarding with connectMode='manual' and role='machine_b'.",
           expectedArgs: {
+            connectMode: "manual",
             role: "machine_a",
             passKey: "<from machine_b>",
             connectEndpoint: "<from machine_b>",
@@ -1403,12 +1474,10 @@ function buildMcpServer() {
 
       return asToolText({
         onboarding: state,
+        connectMode: "manual",
         role: "machine_a",
         machineAStep: buildMachineAStep(passKey, connectEndpoint),
-        hostedPair: hostedPairAvailable() ? buildHostedPairSteps(passKey, connectEndpoint) : null,
-        next: hostedPairAvailable()
-          ? "Preferred: call pair_with_code on both machines with the same code."
-          : "Run machineAStep. It prints OFFER_BLOB. Send that to Machine B and continue there with onboarding(role=machine_b, offerBlob=...).",
+        next: "Run machineAStep. It prints OFFER_BLOB. Send that to Machine B and continue there with onboarding(connectMode='manual', role='machine_b', offerBlob=...).",
       });
     },
   );

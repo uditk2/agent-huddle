@@ -19,7 +19,7 @@ const DEFAULT_LOCAL_IMPORT_URL = process.env.WEBRTC_MCP_IMPORT_URL || deriveImpo
 
 function usage(exitCode = 1) {
   console.error(
-    "Usage: node scripts/hosted_pair_client.js --role <auto|machine_a|machine_b> [--pass-key <KEY>] [--signaling-url <URL>] [--signaling-token <TOKEN>] [--connect-url <URL>] [--import-url <URL>] [--peer-id <ID>] [--ice-servers '<JSON>']",
+    "Usage: node scripts/hosted_pair_client.js --role <auto|machine_a|machine_b> [--pass-key <KEY>] [--signaling-url <URL>] [--connect-url <URL>] [--import-url <URL>] [--peer-id <ID>] [--ice-servers '<JSON>'] [--signaling-token <TOKEN>]",
   );
   process.exit(exitCode);
 }
@@ -108,16 +108,19 @@ function askLine(prompt) {
   });
 }
 
-async function postJsonWithAuth(url, payload, bearer, timeoutMs = 20000) {
+async function postJsonWithOptionalAuth(url, payload, bearer = "", timeoutMs = 20000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = {
+    "content-type": "application/json",
+  };
+  if (bearer) {
+    headers.authorization = `Bearer ${bearer}`;
+  }
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${bearer}`,
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -201,8 +204,8 @@ async function ensureLocalPassKey(importUrl, passKey) {
 }
 
 async function createRendezvous({ signalingBaseUrl, signalingToken, passKey, peerId }) {
-  const url = `${signalingBaseUrl.replace(/\/+$/, "")}/api/rendezvous`;
-  const result = await postJsonWithAuth(url, { passKey, peerId }, signalingToken);
+  const url = `${signalingBaseUrl.replace(/\/+$/, "")}/api/connect`;
+  const result = await postJsonWithOptionalAuth(url, { passKey, peerId }, signalingToken);
   if (!result.ok) {
     throw new Error(`Rendezvous failed (${result.status}): ${JSON.stringify(result.body)}`);
   }
@@ -775,12 +778,6 @@ async function main() {
   args.signalingToken = args.signalingToken || DEFAULT_SIGNALING_TOKEN;
   args.connectUrl = args.connectUrl || DEFAULT_LOCAL_CONNECT_URL;
   args.importUrl = args.importUrl || DEFAULT_LOCAL_IMPORT_URL;
-
-  if (!args.signalingToken) {
-    throw new Error(
-      "Missing signaling token. Run scripts/bootstrap_hosted_signaling.sh first or pass --signaling-token.",
-    );
-  }
 
   if (args.role === "machine_a") {
     await runMachineA(args);

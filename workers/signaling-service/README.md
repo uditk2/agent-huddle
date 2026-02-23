@@ -6,7 +6,8 @@ This service provides:
 - GitHub token sign-in (`/api/auth/github`)
 - WebRTC signaling rooms over WebSocket (Durable Object)
 - Cloudflare TURN credential minting (`/api/turn/credentials`)
-- Passkey-based rendezvous session creation (`/api/rendezvous`)
+- Passkey issuance + validation map in Durable Object storage
+- Passkey-based connect endpoint (`/api/connect`, no bearer auth)
 
 It is designed so only this backend holds Cloudflare API secrets. Clients receive short-lived TURN credentials.
 
@@ -119,7 +120,7 @@ POST /api/pair-key/issue
 Authorization: Bearer <token>
 Content-Type: application/json
 
-{ "ttlSec": 600 }
+{ "ttlSec": 600, "maxRedeems": 6 }
 ```
 
 ### GitHub login (access token exchange)
@@ -157,11 +158,10 @@ Returns:
 - `wsUrl` (already contains `token` + `peerId` query params)
 - `turn` (short-lived `iceServers`, if configured)
 
-### Rendezvous by pass key (deterministic session id)
+### Connect by pass key (no bearer auth)
 
 ```http
-POST /api/rendezvous
-Authorization: Bearer <token>
+POST /api/connect
 Content-Type: application/json
 
 { "passKey": "ABCD-EFGH-IJKL", "peerId": "machine-a" }
@@ -173,6 +173,16 @@ Returns:
 - `joinToken`
 - `wsUrl`
 - `turn` (if configured)
+- `matchmaking` (redeem counter + expiry info)
+
+Compatibility alias:
+
+```http
+POST /api/rendezvous
+Content-Type: application/json
+
+{ "passKey": "ABCD-EFGH-IJKL", "peerId": "machine-a" }
+```
 
 ### Join existing signaling session
 
@@ -212,3 +222,4 @@ Server events:
 - Keep WebRTC `iceTransportPolicy` as `all` so direct P2P is preferred; TURN is used only when needed.
 - `TURN_AUTO_ON_SESSION=true` returns TURN credentials in session creation response by default.
 - Restrict `ALLOWED_ORIGINS` in `wrangler.jsonc` for production.
+- Pair-key records are stored in Durable Object storage with TTL + redeem limits.
