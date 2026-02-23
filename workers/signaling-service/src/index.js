@@ -2290,9 +2290,9 @@ function renderPairPage(origin) {
     }
 
     function updateFlow(status) {
-      const redeemCount = Number(status?.redeemCount || 0);
-      const progress = Array.isArray(status?.progress) ? status.progress : [];
-      const events = new Set(progress.map((item) => item?.event).filter(Boolean));
+      const redeemCount = Number((status && status.redeemCount) || 0);
+      const progress = Array.isArray(status && status.progress) ? status.progress : [];
+      const events = new Set(progress.map((item) => (item && item.event) || "").filter(Boolean));
       const hasHandshake = events.has("offer-sent") || events.has("answer-sent");
       const hasConnected = events.has("datachannel-open");
       const hasError = events.has("remote-error") || events.has("terminal-error") || events.has("connect-error");
@@ -2345,11 +2345,11 @@ function renderPairPage(origin) {
       }
 
       const recent = progress.slice(-6).map((item) => {
-        const time = item?.ts ? new Date(item.ts).toLocaleTimeString() : "--:--";
-        const detail = item?.detail ? " (" + item.detail + ")" : "";
-        return time + " · " + (item?.event || "event") + detail;
+        const time = item && item.ts ? new Date(item.ts).toLocaleTimeString() : "--:--";
+        const detail = item && item.detail ? " (" + item.detail + ")" : "";
+        return time + " · " + ((item && item.event) || "event") + detail;
       });
-      flowLogEl.textContent = recent.length ? recent.join("\n") : "No progress events yet.";
+      flowLogEl.textContent = recent.length ? recent.join("\\n") : "No progress events yet.";
 
       renderChat(progress);
     }
@@ -2357,20 +2357,20 @@ function renderPairPage(origin) {
     function renderChat(progress) {
       const lines = [];
       const relevant = progress.filter((item) => {
-        const event = item?.event || "";
+        const event = (item && item.event) || "";
         return event === "command" || event === "output" || event === "remote-error" || event === "terminal-error";
       });
       const recent = relevant.slice(-30);
       for (const item of recent) {
-        const time = item?.ts ? new Date(item.ts).toLocaleTimeString() : "--:--";
-        const peer = item?.peerId ? item.peerId.split("-").slice(-1)[0] : "peer";
+        const time = item && item.ts ? new Date(item.ts).toLocaleTimeString() : "--:--";
+        const peer = item && item.peerId ? item.peerId.split("-").slice(-1)[0] : "peer";
         const meta = "[" + time + " · " + peer + "] ";
         if (item.event === "command") {
           lines.push(
             "<span class=\"chat-line\"><span class=\"meta\">" +
               meta +
               "</span><span class=\"cmd\">$ " +
-              escapeHtml(item.detail || "") +
+              escapeHtml((item && item.detail) || "") +
               "</span></span>",
           );
         } else if (item.event === "output") {
@@ -2378,7 +2378,7 @@ function renderPairPage(origin) {
             "<span class=\"chat-line\"><span class=\"meta\">" +
               meta +
               "</span><span class=\"out\">" +
-              escapeHtml(item.detail || "") +
+              escapeHtml((item && item.detail) || "") +
               "</span></span>",
           );
         } else {
@@ -2386,7 +2386,7 @@ function renderPairPage(origin) {
             "<span class=\"chat-line\"><span class=\"meta\">" +
               meta +
               "</span><span class=\"err\">" +
-              escapeHtml(item.detail || item.event || "") +
+              escapeHtml((item && (item.detail || item.event)) || "") +
               "</span></span>",
           );
         }
