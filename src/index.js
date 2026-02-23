@@ -88,6 +88,7 @@ const connectSchema = z.object({
   offerSdp: z.string().min(10),
   label: z.string().trim().max(120).optional(),
   iceServers: z.array(iceServerSchema).max(16).optional(),
+  multi: z.boolean().optional(),
 });
 
 const revokeSchema = z.object({
@@ -586,8 +587,55 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-function consumeSessionFromPassKey(passKey) {
-  const passHash = hashPassKey(passKey);
+function createSessionForPass({ passKey, label = "", source = "multi", expiresAt }) {
+  const sessionId = crypto.randomUUID();
+  const issuedAt = Date.now();
+  const session = {
+    sessionId,
+    label,
+    source,
+    issuedAt,
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : issuedAt + PASSKEY_TTL_MS,
+    consumedAt: issuedAt,
+    connectedAt: null,
+    closedAt: null,
+    closeReason: null,
+    status: "connecting",
+    passHash: hashPassKey(passKey),
+    peerConnection: null,
+    channel: null,
+    terminal: null,
+    lastPongAt: null,
+    keepaliveTimer: null,
+    closing: false,
+  };
+  sessions.set(sessionId, session);
+  return session;
+}
+
+function consumeSessionFromPassKey(passKey, { allowReuse = false } = {}) {
+  const normalizedPassKey = formatPassKey(passKey);
+  const passHash = hashPassKey(normalizedPassKey);
+
+  if (allowReuse) {
+    const active = getActivePassSession();
+    if (!active || !activePassKey || activePassKey !== normalizedPassKey) {
+      return { error: "invalid-passkey" };
+    }
+    if (Date.now() > active.expiresAt) {
+      closeSession(active, "passkey-expired");
+      ensureActivePassKey({ source: "auto-after-expire", label: "active-pass" });
+      return { error: "expired-passkey" };
+    }
+    const session = createSessionForPass({
+      passKey: normalizedPassKey,
+      label: "multi-connect",
+      source: "multi",
+      expiresAt: active.expiresAt,
+    });
+    return { session, reused: true };
+  }
+
   const sessionId = passIndex.get(passHash);
 
   if (!sessionId) {
@@ -639,7 +687,7 @@ function setupPeerHandlers(session, peerConnection) {
   };
 }
 
-async function connectOffer({ passKey, offerSdp, label, iceServers }) {
+async function connectOffer({ passKey, offerSdp, label, iceServers, multi }) {
   let RTCPeerConnectionCtor;
   try {
     RTCPeerConnectionCtor = await resolveRTCPeerConnectionCtor();
@@ -651,7 +699,7 @@ async function connectOffer({ passKey, offerSdp, label, iceServers }) {
     };
   }
 
-  const consumed = consumeSessionFromPassKey(passKey);
+  const consumed = consumeSessionFromPassKey(passKey, { allowReuse: Boolean(multi) });
   if (consumed.error) {
     return { error: consumed.error, status: 401 };
   }

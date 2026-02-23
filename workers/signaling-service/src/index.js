@@ -515,6 +515,46 @@ export default {
       );
     }
 
+    if (request.method === "POST" && url.pathname === "/api/pair-key/status") {
+      const auth = await requireUser(request, env);
+      if (auth.errorResponse) {
+        return withCors(auth.errorResponse, env, request);
+      }
+
+      const body = await readJsonBody(request);
+      const rawPassKey = typeof body.pairKey === "string" ? body.pairKey.trim() : "";
+      if (!rawPassKey) {
+        return withCors(json({ error: "missing-pass-key" }, 400), env, request);
+      }
+      const normalizedPassKey = normalizePassKey(rawPassKey);
+      const status = await getPairKeyStatus(env, { pairKey: normalizedPassKey });
+      if (!status.ok) {
+        return withCors(json({ error: status.error, detail: status.detail }, status.status), env, request);
+      }
+      return withCors(json(status.body), env, request);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/pair-key/progress") {
+      const body = await readJsonBody(request);
+      const rawPassKey = typeof body.pairKey === "string" ? body.pairKey.trim() : "";
+      if (!rawPassKey) {
+        return withCors(json({ error: "missing-pass-key" }, 400), env, request);
+      }
+      const normalizedPassKey = normalizePassKey(rawPassKey);
+      const event = typeof body.event === "string" ? body.event.trim() : "";
+      const progress = await updatePairKeyProgress(env, {
+        pairKey: normalizedPassKey,
+        event,
+        role: typeof body.role === "string" ? body.role.trim() : "",
+        peerId: typeof body.peerId === "string" ? body.peerId.trim() : "",
+        detail: typeof body.detail === "string" ? body.detail.trim() : "",
+      });
+      if (!progress.ok) {
+        return withCors(json({ error: progress.error, detail: progress.detail }, progress.status), env, request);
+      }
+      return withCors(json(progress.body), env, request);
+    }
+
     if (request.method === "POST" && url.pathname === "/api/turn/credentials") {
       const auth = await requireUser(request, env);
       if (auth.errorResponse) {
@@ -796,6 +836,41 @@ async function redeemPairKeyRecord(env, payload) {
   };
 }
 
+async function updatePairKeyProgress(env, payload) {
+  const result = await callPairKeyStore(env, "/progress", payload);
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status || 500,
+      error: result.body?.error || "pair-key-store-progress-failed",
+      detail: result.body?.detail || result.body || null,
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    body: result.body || {},
+  };
+}
+
+async function getPairKeyStatus(env, payload) {
+  const result = await callPairKeyStore(env, "/status", payload);
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status || 500,
+      error: result.body?.error || "pair-key-store-status-failed",
+      detail: result.body?.detail || result.body || null,
+      body: result.body || {},
+    };
+  }
+  return {
+    ok: true,
+    status: 200,
+    body: result.body || {},
+  };
+}
+
 function clampInt(value, min, max) {
   const n = Number(value);
   const lo = Number.isFinite(min) ? min : 1;
@@ -836,6 +911,12 @@ async function handlePairKeyConnect(request, url, env) {
 
   const sessionId = await deriveRendezvousSessionId(normalizedPassKey);
   const peerId = sanitizePeerId(body.peerId) || `${safeSubject}-${makeShortId()}`;
+  await updatePairKeyProgress(env, {
+    pairKey: normalizedPassKey,
+    event: "connect",
+    peerId,
+    detail: "connect-called",
+  });
 
   const configuredConnectTtl = parsePositiveInt(env.PAIR_KEY_CONNECT_TTL_SEC, DEFAULT_PAIR_KEY_TTL_SEC);
   const requestedJoinTtl = parsePositiveInt(body.joinTtlSec, configuredConnectTtl);
@@ -1926,6 +2007,119 @@ function renderPairPage(origin) {
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .flow {
+      margin-top: 18px;
+      border-top: 1px dashed var(--line);
+      padding-top: 18px;
+    }
+    .flow h2 {
+      margin: 0;
+      font-size: 1.1rem;
+      letter-spacing: -0.01em;
+    }
+    .flow p {
+      margin-top: 6px;
+    }
+    .flow-visual {
+      margin-top: 12px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      overflow: hidden;
+    }
+    .flow-visual svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .flow-visual .rail {
+      stroke: #c8b8a6;
+      stroke-width: 6;
+      stroke-linecap: round;
+    }
+    .flow-visual .rail[data-state="done"] {
+      stroke: var(--accent);
+    }
+    .flow-visual .stop circle {
+      fill: #f6efe4;
+      stroke: #c8b8a6;
+      stroke-width: 3;
+    }
+    .flow-visual .stop[data-state="active"] circle {
+      fill: #f3b965;
+      stroke: #b47a2d;
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    .flow-visual .stop[data-state="done"] circle {
+      fill: var(--accent);
+      stroke: var(--accent);
+    }
+    .flow-visual .stop[data-state="error"] circle {
+      fill: var(--warn);
+      stroke: var(--warn);
+    }
+    .flow-visual text {
+      font-size: 12px;
+      font-family: "Plus Jakarta Sans", "Avenir Next", sans-serif;
+      fill: #243138;
+    }
+    .flow-legend {
+      margin-top: 10px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .flow-log {
+      margin-top: 10px;
+      background: rgba(36, 49, 56, 0.05);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font: 500 0.82rem/1.5 "SFMono-Regular", Menlo, Consolas, monospace;
+      color: #42565f;
+      white-space: pre-wrap;
+    }
+    .chat {
+      margin-top: 16px;
+      border-top: 1px dashed var(--line);
+      padding-top: 16px;
+    }
+    .chat h2 {
+      margin: 0;
+      font-size: 1.05rem;
+    }
+    .chat-log {
+      margin-top: 10px;
+      background: #111b20;
+      color: #d7e0e4;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font: 500 0.85rem/1.5 "SFMono-Regular", Menlo, Consolas, monospace;
+      min-height: 140px;
+      max-height: 260px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    .chat-line {
+      display: block;
+      margin-bottom: 4px;
+    }
+    .chat-line .meta {
+      color: #7aa7a1;
+    }
+    .chat-line .cmd {
+      color: #f3b965;
+    }
+    .chat-line .out {
+      color: #b7c9d1;
+    }
+    .chat-line .err {
+      color: #e28b7c;
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.08); }
+      100% { transform: scale(1); }
+    }
   </style>
 </head>
 <body>
@@ -1944,6 +2138,42 @@ function renderPairPage(origin) {
       <pre class="helper" id="helper">Use this same code on both machines in MCP pair_with_code flow.</pre>
       <textarea id="token" readonly placeholder="Agent Huddle access token (setup/admin use only)."></textarea>
     </div>
+    <section class="flow">
+      <h2>Live Pairing Track</h2>
+      <p>Watch progress update as each machine joins, negotiates, and opens the data channel.</p>
+      <div class="flow-visual" aria-live="polite">
+        <svg id="pair-flow" viewBox="0 0 720 180" role="img" aria-label="Pairing progress track">
+          <line class="rail" x1="60" y1="90" x2="660" y2="90" />
+          <g class="stop" data-step="code" transform="translate(60 90)">
+            <circle r="16" />
+            <text x="-20" y="36">Code</text>
+          </g>
+          <g class="stop" data-step="machine1" transform="translate(210 90)">
+            <circle r="16" />
+            <text x="-36" y="36">Machine 1</text>
+          </g>
+          <g class="stop" data-step="machine2" transform="translate(360 90)">
+            <circle r="16" />
+            <text x="-36" y="36">Machine 2</text>
+          </g>
+          <g class="stop" data-step="handshake" transform="translate(510 90)">
+            <circle r="16" />
+            <text x="-34" y="36">Handshake</text>
+          </g>
+          <g class="stop" data-step="connected" transform="translate(660 90)">
+            <circle r="16" />
+            <text x="-38" y="36">Connected</text>
+          </g>
+        </svg>
+      </div>
+      <div class="flow-legend" id="flow-legend">Waiting for code issuance...</div>
+      <div class="flow-log" id="flow-log">No progress events yet.</div>
+    </section>
+    <section class="chat">
+      <h2>Session Feed (Read-Only)</h2>
+      <p>Shows commands and output observed during pairing sessions.</p>
+      <div class="chat-log" id="chat-log">No session messages yet.</div>
+    </section>
   </main>
   <script>
     const tokenStorageKey = "agentHuddleAccessToken";
@@ -1954,7 +2184,24 @@ function renderPairPage(origin) {
     const copyPairBtn = document.getElementById("copy-pair-key");
     const refreshPairBtn = document.getElementById("refresh-pair-key");
     const logoutBtn = document.getElementById("logout-btn");
+    const flowLegendEl = document.getElementById("flow-legend");
+    const flowLogEl = document.getElementById("flow-log");
+    const chatLogEl = document.getElementById("chat-log");
+    const stopEls = new Map(
+      Array.from(document.querySelectorAll(".flow-visual .stop")).map((el) => [el.dataset.step, el]),
+    );
+    const railEl = document.querySelector(".flow-visual .rail");
     let accessToken = "";
+    let statusPollTimer = null;
+
+    function escapeHtml(text) {
+      return String(text || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message;
@@ -1964,6 +2211,163 @@ function renderPairPage(origin) {
     function setPairKey(pairKey) {
       pairKeyEl.value = pairKey;
       helperEl.textContent = "Use this same code on both machines in MCP pair_with_code flow.";
+    }
+
+    function setStopState(step, state) {
+      const el = stopEls.get(step);
+      if (!el) return;
+      el.dataset.state = state;
+    }
+
+    function resetFlow() {
+      for (const [step] of stopEls) {
+        setStopState(step, "pending");
+      }
+      if (railEl) {
+        railEl.dataset.state = "";
+      }
+    }
+
+    function updateFlow(status) {
+      const redeemCount = Number(status?.redeemCount || 0);
+      const progress = Array.isArray(status?.progress) ? status.progress : [];
+      const events = new Set(progress.map((item) => item?.event).filter(Boolean));
+      const hasHandshake = events.has("offer-sent") || events.has("answer-sent");
+      const hasConnected = events.has("datachannel-open");
+      const hasError = events.has("remote-error") || events.has("terminal-error") || events.has("connect-error");
+
+      resetFlow();
+      setStopState("code", "done");
+
+      if (redeemCount >= 1) {
+        setStopState("machine1", "done");
+      } else {
+        setStopState("machine1", "active");
+      }
+
+      if (redeemCount >= 2) {
+        setStopState("machine2", "done");
+      } else if (redeemCount >= 1) {
+        setStopState("machine2", "active");
+      }
+
+      if (hasHandshake) {
+        setStopState("handshake", "done");
+      } else if (redeemCount >= 2) {
+        setStopState("handshake", "active");
+      }
+
+      if (hasConnected) {
+        setStopState("connected", "done");
+      } else if (hasHandshake) {
+        setStopState("connected", "active");
+      }
+
+      if (hasError) {
+        setStopState("connected", "error");
+      }
+
+      if (railEl) {
+        railEl.dataset.state = hasConnected ? "done" : "";
+      }
+
+      if (hasConnected) {
+        flowLegendEl.textContent = "Data channel is open. You can start using the remote terminal.";
+      } else if (hasHandshake) {
+        flowLegendEl.textContent = "Handshake completed. Waiting for data channel to open.";
+      } else if (redeemCount >= 2) {
+        flowLegendEl.textContent = "Both machines joined. Waiting for offer/answer negotiation.";
+      } else if (redeemCount === 1) {
+        flowLegendEl.textContent = "One machine joined. Waiting for the second machine.";
+      } else {
+        flowLegendEl.textContent = "Code issued. Waiting for machines to join.";
+      }
+
+      const recent = progress.slice(-6).map((item) => {
+        const time = item?.ts ? new Date(item.ts).toLocaleTimeString() : "--:--";
+        const detail = item?.detail ? " (" + item.detail + ")" : "";
+        return time + " · " + (item?.event || "event") + detail;
+      });
+      flowLogEl.textContent = recent.length ? recent.join("\n") : "No progress events yet.";
+
+      renderChat(progress);
+    }
+
+    function renderChat(progress) {
+      const lines = [];
+      const relevant = progress.filter((item) => {
+        const event = item?.event || "";
+        return event === "command" || event === "output" || event === "remote-error" || event === "terminal-error";
+      });
+      const recent = relevant.slice(-30);
+      for (const item of recent) {
+        const time = item?.ts ? new Date(item.ts).toLocaleTimeString() : "--:--";
+        const peer = item?.peerId ? item.peerId.split("-").slice(-1)[0] : "peer";
+        const meta = "[" + time + " · " + peer + "] ";
+        if (item.event === "command") {
+          lines.push(
+            "<span class=\"chat-line\"><span class=\"meta\">" +
+              meta +
+              "</span><span class=\"cmd\">$ " +
+              escapeHtml(item.detail || "") +
+              "</span></span>",
+          );
+        } else if (item.event === "output") {
+          lines.push(
+            "<span class=\"chat-line\"><span class=\"meta\">" +
+              meta +
+              "</span><span class=\"out\">" +
+              escapeHtml(item.detail || "") +
+              "</span></span>",
+          );
+        } else {
+          lines.push(
+            "<span class=\"chat-line\"><span class=\"meta\">" +
+              meta +
+              "</span><span class=\"err\">" +
+              escapeHtml(item.detail || item.event || "") +
+              "</span></span>",
+          );
+        }
+      }
+
+      if (!lines.length) {
+        chatLogEl.textContent = "No session messages yet.";
+        return;
+      }
+      chatLogEl.innerHTML = lines.join("");
+      chatLogEl.scrollTop = chatLogEl.scrollHeight;
+    }
+
+    async function pollPairStatus() {
+      if (!accessToken || !pairKeyEl.value) {
+        return;
+      }
+      try {
+        const resp = await fetch("/api/pair-key/status", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "authorization": "Bearer " + accessToken,
+          },
+          body: JSON.stringify({ pairKey: pairKeyEl.value }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok || !body.ok) {
+          return;
+        }
+        updateFlow(body);
+      } catch {
+        // ignore poll errors
+      }
+    }
+
+    function startStatusPolling() {
+      if (statusPollTimer) {
+        clearInterval(statusPollTimer);
+      }
+      statusPollTimer = setInterval(pollPairStatus, 2500);
+      pollPairStatus();
     }
 
     async function issuePairKey() {
@@ -1995,6 +2399,7 @@ function renderPairPage(origin) {
         }
         setPairKey(String(body.pairKey));
         setStatus("Code ready. Paste this code in both MCP chats.");
+        startStatusPolling();
       } catch (error) {
         setStatus("Code generation failed: " + String(error && error.message ? error.message : error), true);
       }

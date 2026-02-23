@@ -35,6 +35,56 @@ function parsePositiveInt(value, fallback) {
   return Math.floor(num);
 }
 
+function normalizeEvent(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text || text.length > 64) {
+    return "";
+  }
+  return text.replace(/[^a-z0-9._-]/g, "");
+}
+
+function normalizePeerId(value) {
+  const text = String(value || "").trim();
+  if (!text || text.length > 128) {
+    return "";
+  }
+  return text.replace(/[^\w@.-]/g, "");
+}
+
+function normalizeRole(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) {
+    return "";
+  }
+  if (text === "offerer" || text === "answerer" || text === "machine_a" || text === "machine_b" || text === "auto") {
+    return text;
+  }
+  return "";
+}
+
+function safeDetail(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  return text.slice(0, 240);
+}
+
+function summarizeProgress(progress) {
+  const peerIds = new Set();
+  let lastEvent = null;
+  for (const item of progress || []) {
+    if (item && item.peerId) {
+      peerIds.add(item.peerId);
+    }
+    lastEvent = item;
+  }
+  return {
+    peerCount: peerIds.size,
+    lastEvent,
+  };
+}
+
 function pickOwnerClaims(rawClaims) {
   const claims = rawClaims && typeof rawClaims === "object" ? rawClaims : {};
   return {
@@ -97,6 +147,7 @@ export class PairKeyStore {
         redeemCount: 0,
         maxRedeems,
         lastRedeemedAtMs: null,
+        progress: [],
       };
 
       await this.state.storage.put(recordId, record);
@@ -147,6 +198,90 @@ export class PairKeyStore {
         redeemCount: updated.redeemCount,
         maxRedeems,
         ownerClaims: pickOwnerClaims(updated.ownerClaims),
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/progress") {
+      const body = await readJsonBody(request);
+      const normalized = normalizePairKey(body.pairKey);
+      if (normalized.length < 6) {
+        return json({ error: "invalid-pair-key" }, 400);
+      }
+
+      const recordId = await pairKeyRecordId(normalized);
+      const record = await this.state.storage.get(recordId);
+      if (!record || typeof record !== "object") {
+        return json({ error: "pair-key-not-found" }, 404);
+      }
+
+      const nowMs = Date.now();
+      const expiresAtMs = Number(record.expiresAtMs || 0);
+      if (!Number.isFinite(expiresAtMs) || nowMs >= expiresAtMs) {
+        await this.state.storage.delete(recordId);
+        return json({ error: "pair-key-expired" }, 410);
+      }
+
+      const event = normalizeEvent(body.event);
+      if (!event) {
+        return json({ error: "invalid-event" }, 400);
+      }
+
+      const entry = {
+        ts: nowMs,
+        event,
+        role: normalizeRole(body.role),
+        peerId: normalizePeerId(body.peerId),
+        detail: safeDetail(body.detail),
+      };
+
+      const progress = Array.isArray(record.progress) ? record.progress.slice(-39) : [];
+      progress.push(entry);
+
+      await this.state.storage.put(recordId, {
+        ...record,
+        progress,
+        lastProgressAtMs: nowMs,
+      });
+
+      return json({
+        ok: true,
+        expiresAt: new Date(expiresAtMs).toISOString(),
+        progressCount: progress.length,
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/status") {
+      const body = await readJsonBody(request);
+      const normalized = normalizePairKey(body.pairKey);
+      if (normalized.length < 6) {
+        return json({ error: "invalid-pair-key" }, 400);
+      }
+
+      const recordId = await pairKeyRecordId(normalized);
+      const record = await this.state.storage.get(recordId);
+      if (!record || typeof record !== "object") {
+        return json({ error: "pair-key-not-found" }, 404);
+      }
+
+      const nowMs = Date.now();
+      const expiresAtMs = Number(record.expiresAtMs || 0);
+      if (!Number.isFinite(expiresAtMs) || nowMs >= expiresAtMs) {
+        await this.state.storage.delete(recordId);
+        return json({ error: "pair-key-expired" }, 410);
+      }
+
+      const progress = Array.isArray(record.progress) ? record.progress : [];
+      const summary = summarizeProgress(progress);
+
+      return json({
+        ok: true,
+        issuedAt: new Date(record.issuedAtMs || nowMs).toISOString(),
+        expiresAt: new Date(expiresAtMs).toISOString(),
+        redeemCount: parsePositiveInt(record.redeemCount, 0),
+        maxRedeems: parsePositiveInt(record.maxRedeems, DEFAULT_MAX_REDEEMS),
+        lastRedeemedAt: record.lastRedeemedAtMs ? new Date(record.lastRedeemedAtMs).toISOString() : null,
+        progress,
+        progressSummary: summary,
       });
     }
 

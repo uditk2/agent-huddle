@@ -182,6 +182,34 @@ function mergeIceServers(preferred, fallback) {
   return out;
 }
 
+let lastProgressSentAt = 0;
+const MIN_PROGRESS_INTERVAL_MS = 400;
+
+async function reportProgress(args, event, detail = "", roleOverride = "", { throttle = true } = {}) {
+  const signalingBaseUrl = args?.signalingUrl || DEFAULT_SIGNALING_BASE_URL;
+  if (!signalingBaseUrl || !args?.passKey || !event) {
+    return;
+  }
+  const now = Date.now();
+  if (throttle && now - lastProgressSentAt < MIN_PROGRESS_INTERVAL_MS) {
+    return;
+  }
+  lastProgressSentAt = now;
+  const url = `${signalingBaseUrl.replace(/\/+$/, "")}/api/pair-key/progress`;
+  const payload = {
+    pairKey: args.passKey,
+    event,
+    role: roleOverride || args.role || "",
+    peerId: args._peerId || "",
+    detail,
+  };
+  try {
+    await postJsonWithOptionalAuth(url, payload, args.signalingToken || "", 8000);
+  } catch {
+    // ignore progress errors
+  }
+}
+
 async function ensureLocalPassKey(importUrl, passKey) {
   const headers = {};
   if (process.env.WEBRTC_MCP_ADMIN_TOKEN) {
@@ -228,19 +256,32 @@ async function resolveWrtcCtor() {
   return ctor;
 }
 
-function installChannelHandlers(channel, peerConnection) {
+function installChannelHandlers(channel, peerConnection, options = {}) {
+  const interactive = options.interactive !== false;
+  const labelPrefix = options.labelPrefix ? `${options.labelPrefix} ` : "";
+  const args = options.args || null;
   let keepaliveTimer = null;
 
   channel.onmessage = (event) => {
     const text = typeof event.data === "string" ? event.data : event.data?.toString("utf8") || "";
     const payload = safeJsonParse(text);
     if (!payload) {
-      process.stdout.write(text);
+      const output = labelPrefix + text;
+      process.stdout.write(output);
+      if (args) {
+        const snippet = output.slice(0, 180);
+        reportProgress(args, "output", snippet);
+      }
       return;
     }
 
     if (payload.type === "stdout" && typeof payload.data === "string") {
-      process.stdout.write(payload.data);
+      const output = labelPrefix + payload.data;
+      process.stdout.write(output);
+      if (args) {
+        const snippet = output.slice(0, 180);
+        reportProgress(args, "output", snippet);
+      }
       return;
     }
     if (payload.type === "ping") {
@@ -259,6 +300,9 @@ function installChannelHandlers(channel, peerConnection) {
     }
     if (payload.type === "error") {
       process.stderr.write(`[remote-error] ${payload.error}\n`);
+      if (args) {
+        reportProgress(args, "remote-error", String(payload.error || "").slice(0, 180), "", { throttle: false });
+      }
     }
   };
 
@@ -289,6 +333,13 @@ function installChannelHandlers(channel, peerConnection) {
     }
   };
 
+  process.stderr.write("[connected] data channel open\n");
+  process.stderr.write("Type commands. Use /ctrlc to send Ctrl+C, /exit to close.\n");
+
+  if (!interactive) {
+    return;
+  }
+
   const lineReader = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -312,8 +363,6 @@ function installChannelHandlers(channel, peerConnection) {
 
   sendResize();
   process.stdout.on("resize", sendResize);
-  process.stderr.write("[connected] data channel open\n");
-  process.stderr.write("Type commands. Use /ctrlc to send Ctrl+C, /exit to close.\n");
   lineReader.prompt();
 
   lineReader.on("line", (line) => {
@@ -327,8 +376,14 @@ function installChannelHandlers(channel, peerConnection) {
     }
     if (line === "/ctrlc") {
       channel.send(JSON.stringify({ type: "stdin", data: "\u0003" }));
+      if (args) {
+        reportProgress(args, "command", "/ctrlc", "", { throttle: false });
+      }
       lineReader.prompt();
       return;
+    }
+    if (args) {
+      reportProgress(args, "command", line.slice(0, 180), "", { throttle: false });
     }
     channel.send(JSON.stringify({ type: "stdin", data: `${line}\n` }));
     lineReader.prompt();
@@ -361,6 +416,8 @@ async function runMachineA(args) {
     passKey: args.passKey,
     peerId: args.peerId,
   });
+  args._peerId = rendezvous.peerId;
+  await reportProgress(args, "rendezvous-ready");
   const sessionIceServers = mergeIceServers(rendezvous.turn?.iceServers, fallbackIceServers);
   if (Array.isArray(rendezvous.turn?.iceServers) && rendezvous.turn.iceServers.length > 0) {
     process.stderr.write(`[signaling] TURN credentials received (${rendezvous.turn.iceServers.length} ice entries)\n`);
@@ -370,6 +427,7 @@ async function runMachineA(args) {
 
   const ws = await openSocket(rendezvous.wsUrl);
   process.stderr.write(`[signaling] connected as ${rendezvous.peerId}\n`);
+  await reportProgress(args, "signaling-connected");
 
   const peerConnection = new RTCPeerConnectionCtor({ iceServers: sessionIceServers });
   const channel = peerConnection.createDataChannel("terminal", { ordered: true });
@@ -404,6 +462,7 @@ async function runMachineA(args) {
       }),
     );
     process.stderr.write(`[signaling] offer sent to ${targetPeer}\n`);
+    await reportProgress(args, "offer-sent", `target=${targetPeer}`);
   };
 
   const answerPromise = new Promise((resolve, reject) => {
@@ -474,12 +533,14 @@ async function runMachineA(args) {
   });
 
   await waitForDataChannelOpen(channel);
-  installChannelHandlers(channel, peerConnection);
+  await reportProgress(args, "datachannel-open");
+  installChannelHandlers(channel, peerConnection, { args });
 }
 
 async function runMachineB(args) {
   await ensureLocalPassKey(args.importUrl, args.passKey);
   process.stderr.write("[local] pass key imported to local server\n");
+  await reportProgress(args, "local-imported");
 
   const fallbackIceServers = parseIceServers(
     args.iceServers || process.env.WEBRTC_MCP_ICE_SERVERS || DEFAULT_ICE_SERVERS_JSON,
@@ -491,6 +552,8 @@ async function runMachineB(args) {
     passKey: args.passKey,
     peerId: args.peerId,
   });
+  args._peerId = rendezvous.peerId;
+  await reportProgress(args, "rendezvous-ready");
   const sessionIceServers = mergeIceServers(rendezvous.turn?.iceServers, fallbackIceServers);
   if (Array.isArray(rendezvous.turn?.iceServers) && rendezvous.turn.iceServers.length > 0) {
     process.stderr.write(`[signaling] TURN credentials received (${rendezvous.turn.iceServers.length} ice entries)\n`);
@@ -500,6 +563,7 @@ async function runMachineB(args) {
 
   const ws = await openSocket(rendezvous.wsUrl);
   process.stderr.write(`[signaling] ready as ${rendezvous.peerId}; waiting for offer...\n`);
+  await reportProgress(args, "signaling-connected");
 
   ws.on("message", async (raw) => {
     const message = parseWsMessage(raw);
@@ -530,6 +594,7 @@ async function runMachineB(args) {
       process.stderr.write(
         `[error] local /api/connect failed (${connectResult.status}): ${JSON.stringify(connectResult.body)}\n`,
       );
+      await reportProgress(args, "connect-error", `status=${connectResult.status}`);
       return;
     }
 
@@ -541,6 +606,7 @@ async function runMachineB(args) {
       }),
     );
     process.stderr.write(`[signaling] answer sent to ${message.from}\n`);
+    await reportProgress(args, "answer-sent", `target=${message.from}`);
   });
 
   ws.on("error", (error) => {
@@ -565,6 +631,7 @@ async function runAuto(args) {
 
   await ensureLocalPassKey(args.importUrl, args.passKey);
   process.stderr.write("[local] pass key imported to local server\n");
+  await reportProgress(args, "local-imported");
 
   const rendezvous = await createRendezvous({
     signalingBaseUrl: args.signalingUrl,
@@ -572,6 +639,8 @@ async function runAuto(args) {
     passKey: args.passKey,
     peerId: args.peerId,
   });
+  args._peerId = rendezvous.peerId;
+  await reportProgress(args, "rendezvous-ready");
   const sessionIceServers = mergeIceServers(rendezvous.turn?.iceServers, fallbackIceServers);
   if (Array.isArray(rendezvous.turn?.iceServers) && rendezvous.turn.iceServers.length > 0) {
     process.stderr.write(`[signaling] TURN credentials received (${rendezvous.turn.iceServers.length} ice entries)\n`);
@@ -581,37 +650,50 @@ async function runAuto(args) {
 
   const ws = await openSocket(rendezvous.wsUrl);
   process.stderr.write(`[signaling] connected as ${rendezvous.peerId}\n`);
+  await reportProgress(args, "signaling-connected");
 
-  const peerConnection = new RTCPeerConnectionCtor({ iceServers: sessionIceServers });
-  let channel = null;
-  let targetPeer = null;
-  let role = null;
-  let offerSent = false;
-  let answerSent = false;
+  const peers = new Map();
+  let interactivePeerId = null;
 
-  const chooseRole = () => {
-    if (role || !targetPeer) {
-      return;
+  const getRoleForPeer = (peerId) => (rendezvous.peerId < peerId ? "offerer" : "answerer");
+
+  const ensurePeer = (peerId) => {
+    if (!peerId || peerId === rendezvous.peerId) {
+      return null;
     }
-    role = rendezvous.peerId < targetPeer ? "offerer" : "answerer";
-    process.stderr.write(`[auto-role] ${role} (self=${rendezvous.peerId} peer=${targetPeer})\n`);
+    if (peers.has(peerId)) {
+      return peers.get(peerId);
+    }
+    const role = getRoleForPeer(peerId);
+    const entry = {
+      peerId,
+      role,
+      pc: null,
+      channel: null,
+      offerSent: false,
+      answerSent: false,
+    };
+    peers.set(peerId, entry);
+    reportProgress(args, "role-selected", `role=${role}`, role);
+    return entry;
   };
 
-  const maybeSendOffer = async () => {
-    if (role !== "offerer" || offerSent || !targetPeer) {
+  const sendOfferToPeer = async (entry) => {
+    if (!entry || entry.role !== "offerer" || entry.offerSent) {
       return;
     }
-    offerSent = true;
-    channel = peerConnection.createDataChannel("terminal", { ordered: true });
+    entry.offerSent = true;
+    entry.pc = new RTCPeerConnectionCtor({ iceServers: sessionIceServers });
+    entry.channel = entry.pc.createDataChannel("terminal", { ordered: true });
 
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    const gatheredComplete = await waitForIceGatheringComplete(peerConnection);
+    const offer = await entry.pc.createOffer();
+    await entry.pc.setLocalDescription(offer);
+    const gatheredComplete = await waitForIceGatheringComplete(entry.pc);
     if (!gatheredComplete) {
       process.stderr.write("[warning] ICE gathering timed out; continuing with partial offer SDP\n");
     }
 
-    const offerSdp = peerConnection.localDescription?.sdp;
+    const offerSdp = entry.pc.localDescription?.sdp;
     if (!offerSdp) {
       throw new Error("offer SDP missing");
     }
@@ -619,11 +701,12 @@ async function runAuto(args) {
     ws.send(
       JSON.stringify({
         type: "offer",
-        target: targetPeer,
+        target: entry.peerId,
         payload: offerSdp,
       }),
     );
-    process.stderr.write(`[signaling] offer sent to ${targetPeer}\n`);
+    process.stderr.write(`[signaling] offer sent to ${entry.peerId}\n`);
+    await reportProgress(args, "offer-sent", `target=${entry.peerId}`, entry.role);
   };
 
   ws.on("message", async (raw) => {
@@ -633,30 +716,27 @@ async function runAuto(args) {
     }
 
     if (message.type === "welcome" && Array.isArray(message.peers)) {
-      const candidate = message.peers.find((p) => typeof p === "string" && p !== rendezvous.peerId);
-      if (candidate) {
-        targetPeer = candidate;
-        chooseRole();
-        await maybeSendOffer();
+      for (const peerId of message.peers) {
+        if (typeof peerId !== "string") continue;
+        const entry = ensurePeer(peerId);
+        if (entry && entry.role === "offerer") {
+          await sendOfferToPeer(entry);
+        }
       }
       return;
     }
 
     if (message.type === "peer-joined" && typeof message.peerId === "string" && message.peerId !== rendezvous.peerId) {
-      if (!targetPeer) {
-        targetPeer = message.peerId;
-        chooseRole();
-        await maybeSendOffer();
+      const entry = ensurePeer(message.peerId);
+      if (entry && entry.role === "offerer") {
+        await sendOfferToPeer(entry);
       }
       return;
     }
 
     if (message.type === "offer" && typeof message.from === "string") {
-      if (!targetPeer) {
-        targetPeer = message.from;
-      }
-      chooseRole();
-      if (role !== "answerer") {
+      const entry = ensurePeer(message.from);
+      if (!entry || entry.role !== "answerer") {
         return;
       }
 
@@ -671,12 +751,14 @@ async function runAuto(args) {
         offerSdp,
         label: "hosted-auto",
         iceServers: sessionIceServers,
+        multi: true,
       });
 
       if (!connectResult.ok || typeof connectResult.body?.answerSdp !== "string") {
         process.stderr.write(
           `[error] local /api/connect failed (${connectResult.status}): ${JSON.stringify(connectResult.body)}\n`,
         );
+        await reportProgress(args, "connect-error", `status=${connectResult.status}`);
         return;
       }
 
@@ -687,31 +769,34 @@ async function runAuto(args) {
           payload: connectResult.body.answerSdp,
         }),
       );
-      answerSent = true;
+      entry.answerSent = true;
       process.stderr.write(`[signaling] answer sent to ${message.from}\n`);
-      // Host side can exit after answer delivery; terminal session is now local MCP-managed.
-      setTimeout(() => process.exit(0), 1000).unref?.();
+      await reportProgress(args, "answer-sent", `target=${message.from}`, entry.role);
       return;
     }
 
     if (message.type === "answer" && typeof message.from === "string") {
-      if (role !== "offerer") {
-        return;
-      }
-      if (targetPeer && message.from !== targetPeer) {
+      const entry = peers.get(message.from);
+      if (!entry || entry.role !== "offerer") {
         return;
       }
       const answerSdp = typeof message.payload === "string" ? message.payload : message.payload?.sdp;
-      if (!answerSdp || !channel) {
+      if (!answerSdp || !entry.pc || !entry.channel) {
         return;
       }
 
-      await peerConnection.setRemoteDescription({
+      await entry.pc.setRemoteDescription({
         type: "answer",
         sdp: answerSdp,
       });
-      await waitForDataChannelOpen(channel);
-      installChannelHandlers(channel, peerConnection);
+      await waitForDataChannelOpen(entry.channel);
+      await reportProgress(args, "datachannel-open", `peer=${message.from}`, entry.role);
+      if (!interactivePeerId) {
+        interactivePeerId = message.from;
+      }
+      const isInteractive = interactivePeerId === message.from;
+      const labelPrefix = isInteractive ? "" : `[${message.from}]`;
+      installChannelHandlers(entry.channel, entry.pc, { interactive: isInteractive, labelPrefix, args });
       return;
     }
 
@@ -726,9 +811,6 @@ async function runAuto(args) {
   });
 
   ws.on("close", () => {
-    if (answerSent) {
-      process.exit(0);
-    }
     process.stderr.write("[signaling] closed\n");
     process.exit(1);
   });
